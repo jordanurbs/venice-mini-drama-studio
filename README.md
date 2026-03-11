@@ -1,4 +1,4 @@
-# Mini-Drama Studio
+# Mini-Drama Rig
 
 Venice-optimized tooling for creating short-form vertical mini-dramas with consistent characters, locked aesthetics, storyboard generation, video generation, and assembly.
 
@@ -10,14 +10,14 @@ This project is opinionated for a very specific workflow:
 
 ## Why This Exists
 
-Most AI video repos are generic wrappers around media APIs. This one is built specifically for serialized mini-dramas where continuity matters:
+Most AI video projects are generic wrappers around media APIs. This rig is built specifically for serialized mini-dramas where continuity matters:
 - recurring characters
 - locked visual style
 - episode-level script structure
 - panel-to-video workflow
 - subtitle-ready assembly
 
-If you want a Venice-specific production pipeline instead of a general-purpose content generator, this repo is designed for that use case.
+If you want a Venice-specific production pipeline instead of a general-purpose content generator, this rig is designed for that use case.
 
 ## Core Workflow
 
@@ -37,6 +37,28 @@ If you want a Venice-specific production pipeline instead of a general-purpose c
 - The pipeline handles Venice image output quirks and aspect-ratio restoration
 - Video generation is organized around Venice-supported models and shot planning
 - The workflow assumes repeated use of Venice for the same series over many episodes
+
+## Preferred Video Models
+
+For the mini-drama workflow, the rig is opinionated about model choice:
+
+- `kling-v3-pro-image-to-video` for action, movement, dialogue with physical performance, and shots that need stronger cinematic motion
+- `veo3.1-fast-image-to-video` for atmosphere, inserts, close-ups, establishing shots, and quieter beats
+
+Those defaults are intentional. The rig is tuned around high-end model behavior rather than cheapest-possible generation.
+
+## Budgeting Note
+
+This rig assumes you want best-of-the-best output quality for serialized drama production. That means it leans toward premium image, edit, video, and voice workflows instead of bargain-mode defaults.
+
+Before running large episode batches, factor API budgeting into your plan:
+
+- Venice image generation and multi-edit can stack quickly across full episodes
+- Premium video generations are the biggest cost driver
+- ElevenLabs voice, SFX, ambience, and music layers add additional spend on top
+- Multi-episode series work compounds fast if you regenerate often
+
+Treat this as a quality-first production rig and budget API usage accordingly.
 
 ## Project Structure
 
@@ -102,6 +124,6 @@ Secrets belong in `.env`, never in source control. Generated series output is wr
 
 ## Notes
 
-- This repo is intentionally opinionated and not model-agnostic
+- This rig is intentionally opinionated and not model-agnostic
 - The production path is optimized around Venice-specific behavior and constraints
 - The legacy screenplay pipeline is still included, but the main focus is the mini-drama workflow
