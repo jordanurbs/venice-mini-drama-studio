@@ -148,11 +148,3 @@ export async function loadEpisodeScript(
   const raw = await readFile(filePath, 'utf-8');
   return JSON.parse(raw) as EpisodeScript;
 }
-
-export function getElevenLabsApiKey(): string {
-  const key = process.env.ELEVENLABS_API_KEY;
-  if (!key) {
-    throw new Error('ELEVENLABS_API_KEY environment variable is required. Set it in .env');
-  }
-  return key;
-}

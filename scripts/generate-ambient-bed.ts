@@ -1,17 +1,12 @@
 import 'dotenv/config';
-import { ElevenLabsClient } from '../src/elevenlabs/client.js';
-import { generateSoundEffect } from '../src/elevenlabs/sfx.js';
+import { VeniceClient } from '../src/venice/client.js';
+import { generateSoundEffect } from '../src/venice/audio.js';
 
-const prompt = process.argv[2];
-const outputPath = process.argv[3];
+const prompt = process.argv[2] || 'Steady gentle rain falling on a city street at night, distant urban hum, wet pavement reflections, no thunder, no music, continuous ambient loop';
+const outputPath = process.argv[3] || 'output/neon-hearts/episodes/episode-001/audio/ambient-rain-heavy.mp3';
 const duration = parseInt(process.argv[4] || '22', 10);
 
-if (!prompt || !outputPath) {
-  console.error('Usage: npx tsx scripts/generate-ambient-bed.ts "<prompt>" "output/<series>/episodes/episode-NNN/audio/file.mp3" [duration]');
-  process.exit(1);
-}
-
-const client = new ElevenLabsClient();
+const client = new VeniceClient();
 
 console.log(`Generating ${duration}s ambient bed...`);
 console.log(`Prompt: ${prompt}`);
@@ -19,7 +14,6 @@ console.log(`Prompt: ${prompt}`);
 await generateSoundEffect(client, {
   text: prompt,
   durationSeconds: duration,
-  promptInfluence: 0.7,
 }, outputPath);
 
 console.log(`Saved to: ${outputPath}`);

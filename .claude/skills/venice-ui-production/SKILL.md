@@ -125,7 +125,7 @@ Quick-reference table with all shots, durations, transitions, frame references, 
 ### Post-Generation Notes
 - Multi-edit refinement paths (character references for face/body consistency)
 - Character reference file paths
-- Music mood/direction for ElevenLabs
+- Music mood/direction for Venice audio generation
 
 ---
 
@@ -260,7 +260,7 @@ After all panels and videos are generated:
 
 1. Save panels as `shot-NNN.png` in `output/<series>/episodes/episode-NNN/scene-001/`
 2. Save videos as `shot-NNN.mp4` in the same directory
-3. Generate background music via ElevenLabs (specify mood in the guide)
+3. Generate background music via Venice audio generation (specify mood in the guide)
 4. Assemble with: `npx tsx src/mini-drama/cli.ts assemble-episode -p output/<series> -e <N>`
 
 Or assemble manually with ffmpeg if not using the pipeline.
@@ -269,4 +269,4 @@ Or assemble manually with ffmpeg if not using the pipeline.
 
 ## Example Output
 
-Generate a guide into `output/<series>/episodes/episode-NNN/venice-ui-guide.md` as the reference implementation for the current episode.
+See `output/neon-hearts/episodes/episode-002/venice-ui-guide.md` as a complete reference implementation of this workflow applied to a real episode.

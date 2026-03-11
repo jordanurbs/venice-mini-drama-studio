@@ -140,7 +140,7 @@ export async function assembleEpisode(options: AssemblyOptions): Promise<string>
   let processedFiles = normalizedFiles;
 
   if (dialogueDir && existsSync(dialogueDir)) {
-    console.log(`  Replacing dialogue with ElevenLabs TTS (native audio ducked to ${Math.round(nativeAudioVolume * 100)}%)...`);
+    console.log(`  Replacing dialogue with Venice TTS (native audio ducked to ${Math.round(nativeAudioVolume * 100)}%)...`);
     const tmpDir = join(dirname(outputPath), '.tmp-dialogue-mix');
     await mkdir(tmpDir, { recursive: true });
 

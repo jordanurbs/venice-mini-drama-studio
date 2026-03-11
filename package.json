@@ -1,7 +1,7 @@
 {
   "name": "mini-drama-studio",
   "version": "1.0.0",
-  "description": "Venice-optimized mini-drama rig for vertical episodic AI video production",
+  "description": "Agent-first Venice-optimized mini-drama rig for vertical episodic AI video production",
   "homepage": "https://github.com/AI-Captains-Academy/venice-mini-drama-studio",
   "repository": {
     "type": "git",
@@ -19,7 +19,8 @@
     "storyboard",
     "mini-dramas",
     "vertical-video",
-    "elevenlabs"
+    "claude-code",
+    "cursor"
   ],
   "bin": {
     "mini-drama": "./dist/mini-drama/cli.js",

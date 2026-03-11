@@ -205,6 +205,86 @@ export class VeniceClient {
     throw lastError ?? new Error("Venice API request failed after all retries.");
   }
 
+  /**
+   * POST with JSON body, receive either JSON status data or raw binary media.
+   * Useful for async retrieval endpoints that return JSON while processing and
+   * switch to binary once the asset is ready for download.
+   */
+  async postBinaryOrJson<T = unknown>(
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<{ contentType: string; value: T | Buffer }> {
+    await this.applyRateLimit();
+
+    const url = `${this.baseUrl}${path}`;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const backoff = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+        await VeniceClient.sleep(backoff);
+      }
+
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+        });
+
+        this.lastRequestAt = Date.now();
+
+        if (response.ok) {
+          const contentType = response.headers.get("content-type") ?? "";
+          if (contentType.includes("application/json")) {
+            return {
+              contentType,
+              value: (await response.json()) as T,
+            };
+          }
+
+          return {
+            contentType,
+            value: Buffer.from(await response.arrayBuffer()),
+          };
+        }
+
+        let errorBody: unknown;
+        try {
+          errorBody = await response.json();
+        } catch {
+          errorBody = { raw: await response.text().catch(() => "") };
+        }
+
+        const apiError = errorBody as Partial<VeniceApiError>;
+        const message =
+          apiError?.error?.message ??
+          `Venice API returned HTTP ${response.status}`;
+
+        if (response.status === 429 || response.status >= 500) {
+          lastError = new VeniceRequestError(message, response.status, errorBody);
+          continue;
+        }
+
+        throw new VeniceRequestError(message, response.status, errorBody);
+      } catch (err) {
+        if (err instanceof VeniceRequestError) {
+          if (err.status > 0 && err.status < 500 && err.status !== 429) {
+            throw err;
+          }
+          lastError = err;
+        } else {
+          lastError = err instanceof Error ? err : new Error(String(err));
+        }
+      }
+    }
+
+    throw lastError ?? new Error("Venice API request failed after all retries.");
+  }
+
   // ---- Internals ----------------------------------------------------------
 
   /**

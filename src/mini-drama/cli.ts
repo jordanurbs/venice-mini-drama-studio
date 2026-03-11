@@ -18,7 +18,6 @@ import {
   getCharacterDir,
   saveEpisodeScript,
   loadEpisodeScript,
-  getElevenLabsApiKey,
 } from '../series/manager.js';
 import type {
   SeriesState,
@@ -36,13 +35,9 @@ import type { AestheticProfile } from '../storyboard/prompt-builder.js';
 import { VeniceClient } from '../venice/client.js';
 import { generateImage } from '../venice/generate.js';
 import { getVeniceApiKey } from '../config.js';
-
-import { ElevenLabsClient } from '../elevenlabs/client.js';
-import { listVoices, filterVoices, auditionVoices } from '../elevenlabs/voices.js';
-import { generateSpeech, generateDialogueForShots } from '../elevenlabs/tts.js';
-import type { DialogueLine } from '../elevenlabs/tts.js';
-import { generateSoundEffect } from '../elevenlabs/sfx.js';
-import { generateMusic } from '../elevenlabs/music.js';
+import { listVoices, filterVoices, auditionVoices } from '../venice/voices.js';
+import { generateDialogueForShots, generateSoundEffect, generateMusic } from '../venice/audio.js';
+import type { DialogueLine } from '../venice/audio.js';
 
 import { buildImagePrompt, buildCharacterReferencePrompt } from './prompt-builder.js';
 import { generateEpisodeVideos } from './video-generator.js';
@@ -55,7 +50,7 @@ import { buildGenerationPlan, saveGenerationPlan } from './generation-planner.js
 const program = new Command();
 program
   .name('mini-drama')
-  .description('Mini-Drama creation pipeline using Venice AI + ElevenLabs')
+  .description('Mini-Drama creation pipeline using Venice AI')
   .version('1.0.0');
 
 // ── new-series ────────────────────────────────────────────────────────
@@ -287,7 +282,7 @@ program
 // ── audition-voices ───────────────────────────────────────────────────
 program
   .command('audition-voices')
-  .description('Generate voice samples for a character using ElevenLabs')
+  .description('Generate Venice TTS voice samples for a character')
   .requiredOption('-p, --project <dir>', 'Series output directory')
   .requiredOption('-c, --character <name>', 'Character name')
   .option('--sample-text <text>', 'Sample line for audition')
@@ -299,13 +294,13 @@ program
     const char = getCharacter(series, opts.character);
     if (!char) { console.error(`Character "${opts.character}" not found.`); process.exit(1); }
 
-    const apiKey = getElevenLabsApiKey();
-    const client = new ElevenLabsClient(apiKey);
+    const apiKey = getVeniceApiKey();
+    const client = new VeniceClient(apiKey);
 
     const sampleText = opts.sampleText || `You crossed the line tonight. I expected better from you.`;
 
-    console.log(`Fetching available voices...`);
-    const allVoices = await listVoices(client);
+    console.log(`Loading Venice voice catalog...`);
+    const allVoices = await listVoices();
     const gender = char.gender === 'other' ? undefined : char.gender;
     const filtered = filterVoices(allVoices, gender);
 
@@ -332,7 +327,7 @@ program
   .description('Finalize a character with selected voice')
   .requiredOption('-p, --project <dir>', 'Series output directory')
   .requiredOption('-c, --character <name>', 'Character name')
-  .requiredOption('--voice-id <id>', 'ElevenLabs voice ID')
+  .requiredOption('--voice-id <id>', 'Venice voice ID')
   .option('--voice-name <name>', 'Display name for the voice')
   .action(async (opts: { project: string; character: string; voiceId: string; voiceName?: string }) => {
     const series = await loadSeries(resolve(opts.project));
@@ -627,10 +622,10 @@ program
 // ── override-audio ────────────────────────────────────────────────────
 program
   .command('override-audio')
-  .description('Replace dialogue/SFX with ElevenLabs (optional, post video-gen)')
+  .description('Replace dialogue/SFX with Venice audio models (optional, post video-gen)')
   .requiredOption('-p, --project <dir>', 'Series output directory')
   .requiredOption('-e, --episode <number>', 'Episode number', parseInt)
-  .option('--dialogue', 'Override dialogue with ElevenLabs TTS', false)
+  .option('--dialogue', 'Override dialogue with Venice TTS', false)
   .option('--sfx', 'Generate SFX overrides', false)
   .action(async (opts: { project: string; episode: number; dialogue: boolean; sfx: boolean }) => {
     const series = await loadSeries(resolve(opts.project));
@@ -639,8 +634,8 @@ program
     const script = await loadEpisodeScript(series, opts.episode);
     if (!script) { console.error(`Episode ${opts.episode} script not found.`); process.exit(1); }
 
-    const apiKey = getElevenLabsApiKey();
-    const client = new ElevenLabsClient(apiKey);
+    const apiKey = getVeniceApiKey();
+    const client = new VeniceClient(apiKey);
     const episodeDir = getEpisodeDir(series, opts.episode);
     const audioDir = join(episodeDir, 'audio');
     await mkdir(audioDir, { recursive: true });
@@ -656,6 +651,7 @@ program
             character: s.dialogue!.character,
             voiceId: char?.voiceId || '',
             text: s.dialogue!.line,
+            voicePrompt: char?.voiceDescription,
           };
         })
         .filter(l => l.voiceId);
@@ -675,7 +671,14 @@ program
         const shot = sfxShots[i];
         const outputPath = join(audioDir, `sfx-${String(i + 1).padStart(3, '0')}.mp3`);
         try {
-          await generateSoundEffect(client, { text: shot.sfx! }, outputPath);
+          await generateSoundEffect(
+            client,
+            {
+              text: shot.sfx!,
+              durationSeconds: parseShotDurationSeconds(shot.duration),
+            },
+            outputPath,
+          );
           console.log(`  SFX: "${shot.sfx!.slice(0, 40)}" -> ${outputPath}`);
         } catch (err) {
           console.warn(`  SFX failed: ${err}`);
@@ -689,29 +692,29 @@ program
 // ── generate-music ────────────────────────────────────────────────────
 program
   .command('generate-music')
-  .description('Generate background music track via ElevenLabs')
+  .description('Generate background music track via Venice audio')
   .requiredOption('-p, --project <dir>', 'Series output directory')
   .requiredOption('-e, --episode <number>', 'Episode number', parseInt)
   .option('--prompt <prompt>', 'Music style/mood description')
-  .option('--duration <ms>', 'Duration in milliseconds', '60000')
+  .option('--duration <value>', 'Duration in seconds, or milliseconds for backward compatibility', '60')
   .action(async (opts: { project: string; episode: number; prompt?: string; duration: string }) => {
     const series = await loadSeries(resolve(opts.project));
     if (!series) { console.error('Series not found.'); process.exit(1); }
 
-    const apiKey = getElevenLabsApiKey();
-    const client = new ElevenLabsClient(apiKey);
+    const apiKey = getVeniceApiKey();
+    const client = new VeniceClient(apiKey);
     const episodeDir = getEpisodeDir(series, opts.episode);
     const audioDir = join(episodeDir, 'audio');
     await mkdir(audioDir, { recursive: true });
 
     const musicPrompt = opts.prompt || `Dramatic ${series.genre} background music, tension and emotion, cinematic`;
     const outputPath = join(audioDir, 'music.mp3');
+    const durationSeconds = normalizeAudioDurationSeconds(opts.duration, 60);
 
-    console.log(`Generating music: "${musicPrompt}"`);
+    console.log(`Generating music: "${musicPrompt}" (${durationSeconds}s)`);
     await generateMusic(client, {
       prompt: musicPrompt,
-      durationMs: parseInt(opts.duration),
-      instrumental: true,
+      durationSeconds,
     }, outputPath);
 
     console.log(`Music saved: ${outputPath}`);
@@ -727,7 +730,7 @@ program
   .option('--no-music', 'Skip background music mixing')
   .option('--no-ambient', 'Skip ambient bed mixing')
   .option('--ambient-volume <vol>', 'Ambient bed volume (0-1)', '0.3')
-  .option('--no-dialogue-replace', 'Skip ElevenLabs dialogue replacement (use native model voices)')
+  .option('--no-dialogue-replace', 'Skip Venice dialogue replacement (use native model voices)')
   .option('--native-volume <vol>', 'Native audio volume when dialogue is replaced (0-1)', '0.2')
   .action(async (opts: {
     project: string; episode: number; subtitles: boolean; music: boolean;
@@ -786,12 +789,16 @@ program
     const musicPath = join(audioDir, 'music.mp3');
     const hasMusic = opts.music !== false && existsSync(musicPath);
 
-    const ambientPath = join(audioDir, 'ambient-rain.mp3');
-    const hasAmbient = opts.ambient !== false && existsSync(ambientPath);
+    const ambientCandidates = [
+      join(audioDir, 'ambient-rain-heavy.mp3'),
+      join(audioDir, 'ambient-rain.mp3'),
+    ];
+    const ambientPath = ambientCandidates.find(path => existsSync(path));
+    const hasAmbient = opts.ambient !== false && !!ambientPath;
     if (hasAmbient) {
       console.log(`  Ambient bed: ON (${Math.round(parseFloat(opts.ambientVolume) * 100)}% volume)`);
     } else if (opts.ambient !== false) {
-      console.log(`  Ambient bed: OFF (no ambient-rain.mp3 found in audio/)`);
+      console.log(`  Ambient bed: OFF (no ambient bed found in audio/)`);
     }
 
     const epNum = String(opts.episode).padStart(3, '0');
@@ -823,7 +830,7 @@ program
   .description('Full pipeline: storyboard -> video -> music -> assembly')
   .requiredOption('-p, --project <dir>', 'Series output directory')
   .requiredOption('-e, --episode <number>', 'Episode number', parseInt)
-  .option('--with-tts', 'Add ElevenLabs dialogue replacement for voice consistency across episodes', false)
+  .option('--with-tts', 'Add Venice dialogue replacement for voice consistency across episodes', false)
   .option('--skip-music', 'Skip background music generation', false)
   .action(async (opts: { project: string; episode: number; withTts: boolean; skipMusic: boolean }) => {
     console.log('=== Full Episode Production Pipeline ===\n');
@@ -839,7 +846,7 @@ program
     await program.parseAsync(['', '', 'generate-videos', '-p', opts.project, '-e', String(opts.episode)]);
 
     if (opts.withTts) {
-      console.log('\nStep 4: Replacing dialogue with ElevenLabs TTS (voice consistency mode)...');
+      console.log('\nStep 4: Replacing dialogue with Venice TTS (voice consistency mode)...');
       await program.parseAsync(['', '', 'override-audio', '-p', opts.project, '-e', String(opts.episode), '--dialogue']);
     }
 
@@ -893,4 +900,31 @@ function generateCompareHtml(
   <div class="grid">${cards}</div>
 </body>
 </html>`;
+}
+
+function normalizeAudioDurationSeconds(rawValue: string, fallbackSeconds: number): number {
+  const parsed = parseInt(rawValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallbackSeconds;
+  }
+
+  if (parsed > 1_000) {
+    return Math.max(1, Math.round(parsed / 1_000));
+  }
+
+  return parsed;
+}
+
+function parseShotDurationSeconds(duration: string): number {
+  const match = duration.match(/(\d+(?:\.\d+)?)\s*s/i);
+  if (match) {
+    return Math.max(1, Math.round(parseFloat(match[1])));
+  }
+
+  const numeric = parseFloat(duration);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.max(1, Math.round(numeric));
+  }
+
+  return 5;
 }

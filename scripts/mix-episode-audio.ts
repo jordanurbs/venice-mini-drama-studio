@@ -183,13 +183,7 @@ function classifyShot(shot: ScriptShot, isLastShot: boolean, prevShot?: ScriptSh
 
 // ── Main ──
 
-const episodeDirArg = process.argv[2];
-if (!episodeDirArg) {
-  console.error('Usage: npx tsx scripts/mix-episode-audio.ts output/<series>/episodes/episode-NNN');
-  process.exit(1);
-}
-
-const episodeDir = resolve(episodeDirArg);
+const episodeDir = resolve(process.argv[2] || 'output/neon-hearts/episodes/episode-001');
 const sceneDir = join(episodeDir, 'scene-001');
 const audioDir = join(episodeDir, 'audio');
 const tmpDir = join(episodeDir, '.tmp-audio-mix');

@@ -1,6 +1,6 @@
 # Mini-Drama Creation Studio
 
-This workspace creates **AI-powered mini-dramas** -- short-form animated drama series (1-minute episodes, 20-100 per series) designed for mobile consumption. Each series has consistent characters, a locked visual aesthetic, and episodes produced through Venice AI (images + video) and ElevenLabs (voices, SFX, music).
+This workspace creates **AI-powered mini-dramas** -- short-form animated drama series (1-minute episodes, 20-100 per series) designed for mobile consumption. Each series has consistent characters, a locked visual aesthetic, and episodes produced through Venice AI for image, video, and audio generation.
 
 The user interacts entirely through natural language conversation -- never ask them to run commands manually.
 
@@ -8,11 +8,11 @@ The user interacts entirely through natural language conversation -- never ask t
 
 1. **Creates a series** with concept, genre, setting, and locked visual aesthetic
 2. **Designs characters** with 4-angle reference images for visual consistency -- women are always beautiful/elegant with hourglass figures and classy cleavage; men are always extremely handsome
-3. **Auditions voices** per character via ElevenLabs, locked for series consistency
+3. **Auditions voices** per character via Venice TTS, locked for series consistency
 4. **Workshops episode scripts** collaboratively (user provides concept, we draft together)
 5. **Generates storyboard panels** at 9:16 (vertical/mobile-first) using Venice AI
 6. **Generates video clips** with native audio (dialogue, SFX, ambient) using Kling V3 Pro (action) and Veo 3.1 (atmosphere)
-7. **Assembles final episodes** with burned-in subtitles, optional ElevenLabs audio overrides, and background music
+7. **Assembles final episodes** with burned-in subtitles, optional Venice TTS audio overrides, and background music
 
 ## How To Operate
 
@@ -30,7 +30,7 @@ The user interacts entirely through natural language conversation -- never ask t
 | "Storyboard without refinement" | `npx tsx src/mini-drama/cli.ts storyboard-episode -p output/<series> -e 1 --no-refine` |
 | "Fix Sera in shot 4" | `npx tsx src/mini-drama/cli.ts fix-panel -p output/<series> -e 1 -s 4 -c "SERA"` |
 | "Generate videos for episode 1" | `npx tsx src/mini-drama/cli.ts generate-videos -p output/<series> -e 1` |
-| "Replace dialogue with ElevenLabs" | `npx tsx src/mini-drama/cli.ts override-audio -p output/<series> -e 1 --dialogue` |
+| "Replace dialogue with Venice TTS" | `npx tsx src/mini-drama/cli.ts override-audio -p output/<series> -e 1 --dialogue` |
 | "Generate background music" | `npx tsx src/mini-drama/cli.ts generate-music -p output/<series> -e 1 --prompt "dramatic tension"` |
 | "Assemble the episode" | `npx tsx src/mini-drama/cli.ts assemble-episode -p output/<series> -e 1` |
 | "Produce the whole episode" | `npx tsx src/mini-drama/cli.ts produce-episode -p output/<series> -e 1` |
@@ -45,16 +45,16 @@ After creating a series, the project is saved to `output/<series-slug>/`. Check 
 2. **Explore Aesthetic** -- generate comparison samples, user picks a style
 3. **Set Aesthetic** -- lock the chosen visual style
 4. **Add Characters** -- design characters with reference images (requires aesthetic)
-5. **Audition Voices** -- generate ElevenLabs voice samples per character
+5. **Audition Voices** -- generate Venice TTS voice samples per character
 6. **Lock Characters** -- finalize appearance + voice
 7. **Workshop Episode Script** -- collaboratively write the shot-by-shot script (target: 60s)
 8. **Storyboard Episode** -- generate panel images
 9. **QA Storyboard** -- analyze panels for character/setting consistency (automatic, uses vision)
 10. **Generate Videos** -- animate panels with dialogue + delivery cues in prompt; model generates voice, SFX, ambient
-11. **Generate Ambient Layers** -- create rain/crowd/quiet-night ambient beds via ElevenLabs SFX (22s each, looped)
+11. **Generate Ambient Layers** -- create rain/crowd/quiet-night ambient beds via Venice audio generation (22s each, looped)
 12. **Audio Post-Production Mix** -- `scripts/mix-episode-audio.ts` -- per-shot volume/fades + layered ambient beds + subtitles
-13. *(Optional)* **Generate Music** -- create background music track via ElevenLabs (mixed during assembly)
-14. *(Optional)* **Override Audio** -- replace dialogue with ElevenLabs TTS for cross-episode voice consistency (`--with-tts`)
+13. *(Optional)* **Generate Music** -- create background music track via Venice audio generation (mixed during assembly)
+14. *(Optional)* **Override Audio** -- replace dialogue with Venice TTS for cross-episode voice consistency (`--with-tts`)
 
 ### Script Workshop (Step 7) -- Collaborative, Not Automated
 
@@ -202,7 +202,7 @@ When the user reaches the aesthetic step, **do not ask them to describe a style*
 - Venice API `reference_image_urls` (up to 4) used for character consistency in video
 
 **CRITICAL: Every video prompt MUST end with:** `"No background music. Only generate dialogue, ambient sound, and sound effects."`
-This is appended automatically by the prompt builder. Music is always a separate ElevenLabs layer.
+This is appended automatically by the prompt builder. Music is always a separate Venice-generated layer.
 
 ### Transition-Aware Frame Handling
 
@@ -265,7 +265,7 @@ These cause recurring issues in panel generation:
 - **"Matrix-style horizontal 180-degree orbit"** -- bullet-time spin around character
 - **"static camera, Marcus runs toward camera"** -- camera holds, character fills frame
 - **`end_image_url`** -- Kling targets this as the ending composition. Great for transition shots.
-- **Voice consistency** is inherently limited with native model voices. Each generation produces a different voice. For cross-shot consistency, use ElevenLabs TTS override.
+- **Voice consistency** is inherently limited with native model voices. Each generation produces a different voice. For cross-shot consistency, use Venice TTS override.
 
 ### Assembly -- Normalization Required
 
@@ -301,7 +301,7 @@ AI video models generate audio per-shot with no awareness of adjacent shots. Vol
 #### Generating Ambient Layers
 
 ```bash
-# Generate each layer via ElevenLabs SFX (max 22s, will be looped)
+# Generate each layer via Venice audio generation (22s, will be looped)
 npx tsx scripts/generate-ambient-bed.ts "<prompt>" "<output-path>" 22
 
 # Rain:
@@ -356,7 +356,7 @@ output/<series>/episodes/episode-NNN/audio/
   ambient-rain-heavy.mp3   -- Rain layer (22s, looped)
   ambient-crowd.mp3        -- Crowd layer (22s, looped)
   ambient-quiet-night.mp3  -- Quiet night layer (22s, looped)
-  music.mp3                -- Background music (optional, via ElevenLabs)
+  music.mp3                -- Background music (optional, via Venice audio)
   dialogue-shot-NNN.mp3    -- TTS overrides (optional)
 ```
 
@@ -442,13 +442,13 @@ Good delivery cues (controls how the model voices the line):
 
 **Default pipeline** (`produce-episode`):
 1. Generate videos with `audio: true` + dialogue/delivery in prompt -> model generates voice, SFX, ambient
-2. Generate background music via ElevenLabs
+2. Generate background music via Venice audio
 3. Assemble: stitch clips + layer music + burn subtitles
 
 **Voice consistency mode** (`produce-episode --with-tts`):
-If native model voices aren't consistent enough across many episodes, add `--with-tts` to replace dialogue with ElevenLabs TTS using locked character voices. This ducks native audio to 20% (preserving ambient/SFX) and overlays the consistent ElevenLabs voice.
+If native model voices aren't consistent enough across many episodes, add `--with-tts` to replace dialogue with Venice TTS using locked character voices. This ducks native audio to 20% (preserving ambient/SFX) and overlays the consistent Venice voice.
 
-**ElevenLabs dialogue replacement** (optional, via `override-audio --dialogue`):
+**Venice dialogue replacement** (optional, via `override-audio --dialogue`):
 - TTS files are named by shot number: `dialogue-shot-001.mp3`, `dialogue-shot-003.mp3`
 - During assembly, matching shots get native audio ducked to 20% with TTS overlaid
 - Use `--native-volume 0.3` to adjust (0 = mute native, 1 = full native + TTS)
@@ -479,9 +479,8 @@ The voice description is injected into every video prompt as: `SERA (voice: low,
 ```
 src/
   series/         -- SeriesState types, create/load/save series.json
-  elevenlabs/     -- ElevenLabs API client (TTS, SFX, music, voice audition)
+  venice/         -- Venice AI API client (image, video, TTS, queued audio generation)
   mini-drama/     -- Prompt builder, video generator, subtitle gen, assembler
-  venice/         -- Venice AI API client (image + video generation)
   storyboard/     -- Shot planning, prompt templates (shared with legacy pipeline)
   characters/     -- Character profiling (shared with legacy pipeline)
   parsers/        -- Fountain + PDF parsing (legacy pipeline)
@@ -499,7 +498,7 @@ output/<series>/
   characters/<NAME>/
     front.png, three-quarter.png, profile.png, full-body.png
     character.json                -- Description + locked voice_id
-    voice-samples/                -- ElevenLabs audition clips
+    voice-samples/                -- Venice audition clips
   aesthetic-samples/
     *.png + compare.html
   episodes/episode-NNN/
@@ -509,17 +508,16 @@ output/<series>/
       shot-001.video.json         -- Video config + metadata
       shot-001.mp4                -- Generated video (with native audio)
     audio/
-      dialogue-*.mp3              -- Optional ElevenLabs TTS overrides
-      sfx-*.mp3                   -- Optional ElevenLabs SFX overrides
-      music.mp3                   -- Background music (ElevenLabs)
+      dialogue-*.mp3              -- Optional Venice TTS overrides
+      sfx-*.mp3                   -- Optional Venice SFX overrides
+      music.mp3                   -- Background music (Venice audio)
     subtitles.srt                 -- Generated subtitle file
     episode-NNN-final.mp4         -- Assembled final episode
 ```
 
 ## Environment
 
-- `VENICE_API_KEY` in `.env` -- Venice AI image + video generation
-- `ELEVENLABS_API_KEY` in `.env` -- ElevenLabs TTS, SFX, music
+- `VENICE_API_KEY` in `.env` -- Venice AI image, video, TTS, music, and sound generation
 - `ffmpeg` and `ffprobe` on PATH -- video/audio processing
 - Node.js with TypeScript (ES modules, Node16 resolution)
 
@@ -529,7 +527,7 @@ Mini-drama pipeline commands in `.claude/commands/`:
 - `/new-series` -- create a new mini-drama series
 - `/explore-aesthetic` -- generate aesthetic comparison samples
 - `/add-character` -- design and generate character reference images
-- `/audition-voices` -- generate ElevenLabs voice samples per character
+- `/audition-voices` -- generate Venice voice samples per character
 - `/lock-character` -- finalize character with selected voice
 - `/workshop-episode` -- collaboratively write episode script
 - `/storyboard-episode` -- generate panel images for review
@@ -556,7 +554,13 @@ Always run this conversion after `explore-aesthetic` and `add-character` image g
 
 ## Active Series
 
-No active series are included in this fresh copy. Start by creating a new series in `output/`.
+### Neon Hearts (`output/neon-hearts/`)
+- **Genre**: romance / sci-fi
+- **Aesthetic**: Webtoon drama illustration (moody desaturated, selective color, volumetric light)
+- **Concept**: Cyberpunk romance -- corporate exec falls for mysterious woman who is secretly a synthetic agent sent by a rival mega-corp. Audience should NOT know she's synthetic until the reveal near the series finale.
+- **Characters**: MARCUS (male lead, corporate exec), SERA (female lead, synthetic agent -- busty, seductive), DAMON (best friend), PRIYA (VP of strategy, perceptive), KAI (junior analyst, starstruck)
+- **Episode 1**: "The Encounter" -- scripted, ready for storyboarding
+- **Story rule**: No early hints to the audience that Sera is synthetic. The reveal should surprise viewers alongside Marcus.
 
 ## Important
 
@@ -993,7 +997,7 @@ Scripts in `scripts/` handle operations not yet in the CLI. **All must be run fr
 | Script | Purpose | Usage |
 |--------|---------|-------|
 | `mix-episode-audio.ts` | Full audio post-production: per-shot volume/fades, layered ambient beds, subtitle burn-in | `npx tsx scripts/mix-episode-audio.ts <episode-dir>` |
-| `generate-ambient-bed.ts` | Generate ambient SFX layer via ElevenLabs (22s max, looped during mix) | `npx tsx scripts/generate-ambient-bed.ts "<prompt>" "<output-path>" <duration>` |
+| `generate-ambient-bed.ts` | Generate ambient SFX layer via Venice audio (22s max, looped during mix) | `npx tsx scripts/generate-ambient-bed.ts "<prompt>" "<output-path>" <duration>` |
 | `generate-scene-videos.ts` | Generate videos for a scene with frame chaining and `end_image_url` targeting | `npx tsx scripts/generate-scene-videos.ts <project-dir> <scene-num> [model]` |
 | `regenerate-scene1-panels.ts` | Regenerate Scene 1 panels with Clean Dystopia aesthetic (reference implementation for custom panel scripts) | `npx tsx scripts/regenerate-scene1-panels.ts` |
 | `generate-all-videos.ts` | Batch generate videos for ALL scenes (legacy, no frame chaining) | `npx tsx scripts/generate-all-videos.ts <project-dir>` |
