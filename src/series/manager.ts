@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, rename } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import type {
@@ -134,6 +134,17 @@ export async function saveEpisodeScript(
     await mkdir(episodeDir, { recursive: true });
   }
   const filePath = join(episodeDir, 'script.json');
+
+  if (existsSync(filePath)) {
+    let version = 1;
+    let archivePath = join(episodeDir, `script-v${version}.json`);
+    while (existsSync(archivePath)) {
+      version++;
+      archivePath = join(episodeDir, `script-v${version}.json`);
+    }
+    await rename(filePath, archivePath);
+  }
+
   await writeFile(filePath, JSON.stringify(script, null, 2), 'utf-8');
   return filePath;
 }

@@ -24,6 +24,12 @@ export interface AssemblyOptions {
   nativeAudioVolume?: number;
   /** Per-shot trim/flip metadata from script.json */
   shotTrims?: ShotTrim[];
+  /** Optional title that fades in over the ending of the assembled episode */
+  endingTitleOverlay?: {
+    text: string;
+    fadeInSec?: number;
+    holdSec?: number;
+  };
 }
 
 function getVideoDuration(path: string): number {
@@ -104,6 +110,7 @@ export async function assembleEpisode(options: AssemblyOptions): Promise<string>
     dialogueDir,
     nativeAudioVolume = 0.2,
     shotTrims = [],
+    endingTitleOverlay,
   } = options;
 
   await mkdir(dirname(outputPath), { recursive: true });
@@ -204,6 +211,30 @@ export async function assembleEpisode(options: AssemblyOptions): Promise<string>
     currentInput = withMusicPath;
   }
 
+  // ── Step 5.5: Fade title over the ending of the last shot ──
+  if (endingTitleOverlay?.text?.trim()) {
+    const withTitlePath = outputPath.replace(/\.mp4$/, '-with-title.mp4');
+    const totalDuration = getVideoDuration(currentInput);
+    const fadeInSec = endingTitleOverlay.fadeInSec ?? 1.2;
+    const holdSec = endingTitleOverlay.holdSec ?? 1.8;
+    const overlayStart = Math.max(0, totalDuration - holdSec);
+    const escapedText = endingTitleOverlay.text.replace(/'/g, "\\'").replace(/:/g, '\\:');
+    const fontPath = '/System/Library/Fonts/Supplemental/Arial Bold.ttf';
+
+    const titleFilter = [
+      `drawtext=fontfile='${fontPath}':text='${escapedText}':fontcolor=0xD66BFF@0.22:fontsize=104:x=(w-text_w)/2:y=(h-text_h)/2:alpha='if(lt(t,${overlayStart}),0,if(lt(t,${overlayStart + fadeInSec}),(t-${overlayStart})/${fadeInSec},1))'`,
+      `drawtext=fontfile='${fontPath}':text='${escapedText}':fontcolor=0x7EF9FF@0.35:fontsize=98:x=(w-text_w)/2:y=(h-text_h)/2:alpha='if(lt(t,${overlayStart}),0,if(lt(t,${overlayStart + fadeInSec}),(t-${overlayStart})/${fadeInSec},1))'`,
+      `drawtext=fontfile='${fontPath}':text='${escapedText}':fontcolor=white:fontsize=92:x=(w-text_w)/2:y=(h-text_h)/2:alpha='if(lt(t,${overlayStart}),0,if(lt(t,${overlayStart + fadeInSec}),(t-${overlayStart})/${fadeInSec},1))'`,
+    ].join(',');
+
+    execSync(
+      `ffmpeg -y -i "${currentInput}" -vf "${titleFilter}" -c:v libx264 -preset fast -crf 18 -c:a copy "${withTitlePath}"`,
+      { stdio: 'pipe' },
+    );
+    console.log(`  Faded in ending title "${endingTitleOverlay.text}" over final ${holdSec.toFixed(1)}s`);
+    currentInput = withTitlePath;
+  }
+
   // ── Step 6: Burn subtitles ──
   if (srtPath && existsSync(srtPath)) {
     // Save no-subtitles version as backup
@@ -247,6 +278,8 @@ export async function assembleEpisode(options: AssemblyOptions): Promise<string>
     if (existsSync(withAmbientPath)) unlinkSync(withAmbientPath);
     const withMusicPath = outputPath.replace(/\.mp4$/, '-with-music.mp4');
     if (existsSync(withMusicPath)) unlinkSync(withMusicPath);
+    const withTitlePath = outputPath.replace(/\.mp4$/, '-with-title.mp4');
+    if (existsSync(withTitlePath)) unlinkSync(withTitlePath);
     const tmpDialogue = join(dirname(outputPath), '.tmp-dialogue-mix');
     if (existsSync(tmpDialogue)) rmSync(tmpDialogue, { recursive: true, force: true });
   } catch { /* best-effort */ }

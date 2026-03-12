@@ -1,14 +1,21 @@
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, appendFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import type { VeniceClient } from '../venice/client.js';
+import { VeniceRequestError } from '../venice/client.js';
 import type {
   GenerationPlan,
   GenerationUnit,
   GenerationUnitSegment,
   SeriesState,
   ShotScript,
+  VideoElement,
+} from '../series/types.js';
+import {
+  MODELS_SUPPORTING_ELEMENTS,
+  MODELS_SUPPORTING_REFERENCE_IMAGES,
+  MODELS_SUPPORTING_SCENE_IMAGES,
 } from '../series/types.js';
 import {
   buildKlingMultiShotPrompt,
@@ -21,6 +28,7 @@ const VIDEO_QUEUE_PATH = '/api/v1/video/queue';
 const VIDEO_RETRIEVE_PATH = '/api/v1/video/retrieve';
 const VIDEO_COMPLETE_PATH = '/api/v1/video/complete';
 const POLL_INTERVAL_MS = 10_000;
+const MULTISHOT_RETRY_DELAY_MS = 15_000;
 
 interface QueueResponse {
   model: string;
@@ -76,18 +84,69 @@ function saveJson(path: string, data: unknown): Promise<void> {
   return writeFile(path, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+async function logFailedRequest(
+  outputPath: string,
+  body: Record<string, unknown>,
+  error: unknown,
+): Promise<void> {
+  const logDir = dirname(outputPath);
+  const logFile = join(logDir, 'failed-requests.log');
+  const timestamp = new Date().toISOString();
+
+  const sanitizedBody = { ...body };
+  if (sanitizedBody.image_url && typeof sanitizedBody.image_url === 'string' && sanitizedBody.image_url.length > 200) {
+    sanitizedBody.image_url = `${(sanitizedBody.image_url as string).slice(0, 80)}...[${(sanitizedBody.image_url as string).length} chars]`;
+  }
+  if (sanitizedBody.end_image_url && typeof sanitizedBody.end_image_url === 'string' && sanitizedBody.end_image_url.length > 200) {
+    sanitizedBody.end_image_url = `${(sanitizedBody.end_image_url as string).slice(0, 80)}...[${(sanitizedBody.end_image_url as string).length} chars]`;
+  }
+
+  let errorDetail: Record<string, unknown>;
+  if (error instanceof VeniceRequestError) {
+    errorDetail = { status: error.status, message: error.message, body: error.body };
+  } else if (error instanceof Error) {
+    errorDetail = { message: error.message };
+  } else {
+    errorDetail = { raw: String(error) };
+  }
+
+  const entry = {
+    timestamp,
+    targetOutput: outputPath,
+    promptLength: (body.prompt as string)?.length,
+    request: sanitizedBody,
+    error: errorDetail,
+  };
+
+  await appendFile(logFile, JSON.stringify(entry, null, 2) + '\n---\n', 'utf-8');
+  console.warn(`  Failed request logged to: ${logFile}`);
+}
+
 interface RenderVideoOptions {
   prompt: MiniDramaVideoPrompt;
   anchorImagePath: string;
   outputPath: string;
   endFrameImagePath?: string;
+  /** Structured elements for character/object references (@Element1, etc.) */
+  elements?: VideoElement[];
+  /** Flat array of reference image file paths for character/style consistency */
+  referenceImagePaths?: string[];
+  /** Scene reference image file paths for style/environment (@Image1, etc.) */
+  sceneImagePaths?: string[];
+}
+
+function fileToDataUri(filePath: string, mimeType = 'image/png'): string | undefined {
+  if (!filePath || !existsSync(filePath)) return undefined;
+  const buffer = readFileSync(filePath);
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
 }
 
 async function renderVideoFile(
   client: VeniceClient,
   options: RenderVideoOptions,
 ): Promise<string> {
-  const { prompt, anchorImagePath, outputPath, endFrameImagePath } = options;
+  const { prompt, anchorImagePath, outputPath, endFrameImagePath,
+    elements, referenceImagePaths, sceneImagePaths } = options;
   await mkdir(dirname(outputPath), { recursive: true });
 
   const body: Record<string, unknown> = {
@@ -106,8 +165,58 @@ async function renderVideoFile(
     body.resolution = '720p';
   }
 
-  console.log(`  Queueing video: model=${prompt.model}, duration=${prompt.duration}`);
-  const queueResponse = await client.post<QueueResponse>(VIDEO_QUEUE_PATH, body);
+  if (elements && elements.length > 0 && MODELS_SUPPORTING_ELEMENTS.has(prompt.model)) {
+    const apiElements = elements.map(el => {
+      const out: Record<string, unknown> = {};
+      if (el.frontalImageUrl) {
+        out.frontal_image_url = el.frontalImageUrl.startsWith('data:')
+          ? el.frontalImageUrl
+          : fileToDataUri(el.frontalImageUrl) ?? el.frontalImageUrl;
+      }
+      if (el.referenceImageUrls && el.referenceImageUrls.length > 0) {
+        out.reference_image_urls = el.referenceImageUrls.map(url =>
+          url.startsWith('data:') ? url : (fileToDataUri(url) ?? url),
+        );
+      }
+      if (el.videoUrl) out.video_url = el.videoUrl;
+      return out;
+    });
+    body.elements = apiElements;
+    console.log(`  Elements: ${apiElements.length} character/object reference(s)`);
+  }
+
+  if (referenceImagePaths && referenceImagePaths.length > 0
+    && MODELS_SUPPORTING_REFERENCE_IMAGES.has(prompt.model)) {
+    body.reference_image_urls = referenceImagePaths
+      .slice(0, 4)
+      .map(p => p.startsWith('data:') ? p : (fileToDataUri(p) ?? p))
+      .filter(Boolean);
+    console.log(`  Reference images: ${(body.reference_image_urls as string[]).length}`);
+  }
+
+  if (sceneImagePaths && sceneImagePaths.length > 0
+    && MODELS_SUPPORTING_SCENE_IMAGES.has(prompt.model)) {
+    body.scene_image_urls = sceneImagePaths
+      .slice(0, 4)
+      .map(p => p.startsWith('data:') ? p : (fileToDataUri(p) ?? p))
+      .filter(Boolean);
+    console.log(`  Scene images: ${(body.scene_image_urls as string[]).length}`);
+  }
+
+  console.log(`  Queueing video: model=${prompt.model}, duration=${prompt.duration}, prompt=${(prompt.prompt).length} chars`);
+
+  let queueResponse: QueueResponse;
+  try {
+    queueResponse = await client.post<QueueResponse>(VIDEO_QUEUE_PATH, body);
+  } catch (err) {
+    if (err instanceof VeniceRequestError) {
+      console.error(`  Venice queue error (HTTP ${err.status}): ${err.message}`);
+      console.error(`  Error body: ${JSON.stringify(err.body, null, 2)}`);
+    }
+    await logFailedRequest(outputPath, body, err);
+    throw err;
+  }
+
   const { queue_id, model } = queueResponse;
   console.log(`  Queue ID: ${queue_id}`);
 
@@ -150,6 +259,55 @@ async function renderVideoFile(
       console.warn(`  Poll error (will retry): ${err}`);
     }
   }
+}
+
+function resolveCharacterElements(
+  series: SeriesState,
+  shot: ShotScript,
+  prompt: MiniDramaVideoPrompt,
+): { elements?: VideoElement[]; referenceImagePaths?: string[] } {
+  if (!shot.characters || shot.characters.length === 0) return {};
+
+  const resolvedChars = shot.characters
+    .map(name => series.characters.find(c => c.name.toUpperCase() === name.toUpperCase()))
+    .filter(Boolean) as typeof series.characters;
+
+  if (resolvedChars.length === 0) return {};
+
+  const charDir = (name: string) =>
+    join(series.outputDir, 'characters', name.toLowerCase());
+
+  if (prompt.characterElements && prompt.characterElements.length > 0
+    && MODELS_SUPPORTING_ELEMENTS.has(prompt.model)) {
+    const elements: VideoElement[] = prompt.characterElements.map(slot => {
+      const dir = charDir(slot.characterName);
+      const frontal = join(dir, 'front.png');
+      const refs = ['three-quarter.png', 'profile.png']
+        .map(f => join(dir, f))
+        .filter(p => existsSync(p));
+
+      return {
+        frontalImageUrl: existsSync(frontal) ? frontal : undefined,
+        referenceImageUrls: refs.length > 0 ? refs : undefined,
+      };
+    });
+    return { elements };
+  }
+
+  if (shot.useReferenceImages && MODELS_SUPPORTING_REFERENCE_IMAGES.has(prompt.model)) {
+    const paths = resolvedChars
+      .slice(0, 4)
+      .flatMap(c => {
+        const dir = charDir(c.name);
+        return ['front.png', 'three-quarter.png']
+          .map(f => join(dir, f))
+          .filter(p => existsSync(p));
+      })
+      .slice(0, 4);
+    return { referenceImagePaths: paths.length > 0 ? paths : undefined };
+  }
+
+  return {};
 }
 
 function getShotPanelPath(sceneDir: string, shotNumber: number): string {
@@ -308,11 +466,18 @@ async function renderSingleShotUnit(
   unit.model = videoPrompt.model;
   const anchorImagePath = chooseAnchorImagePath(unit, sceneDir, videoPath, previousRenderedShotPath);
   const endFramePath = chooseEndFrameImagePath(unit, sceneDir, nextShotNumber);
+
+  const { elements, referenceImagePaths } = resolveCharacterElements(series, shot, videoPrompt);
+  const sceneImagePaths = shot.sceneImagePaths?.filter(p => existsSync(p));
+
   const savedPath = await renderVideoFile(client, {
     prompt: videoPrompt,
     anchorImagePath,
     outputPath: videoPath,
     endFrameImagePath: endFramePath,
+    elements,
+    referenceImagePaths,
+    sceneImagePaths,
   });
 
   const durationSec = getVideoDuration(savedPath);
@@ -369,11 +534,27 @@ async function renderMultiShotUnit(
   const anchorImagePath = chooseAnchorImagePath(unit, sceneDir, unitOutputPath, previousRenderedShotPath);
   const endFramePath = chooseEndFrameImagePath(unit, sceneDir, nextShotNumber);
 
+  const allCharNames = Array.from(new Set(shots.flatMap(s => s.characters)));
+  const anyUseRefs = shots.some(s => s.useReferenceImages);
+  const refPaths = anyUseRefs && MODELS_SUPPORTING_REFERENCE_IMAGES.has(prompt.model)
+    ? allCharNames
+      .map(name => series.characters.find(c => c.name.toUpperCase() === name.toUpperCase()))
+      .filter(Boolean)
+      .flatMap(c => {
+        const dir = join(series.outputDir, 'characters', c!.name.toLowerCase());
+        return ['front.png', 'three-quarter.png']
+          .map(f => join(dir, f))
+          .filter(p => existsSync(p));
+      })
+      .slice(0, 4)
+    : undefined;
+
   const savedUnitPath = await renderVideoFile(client, {
     prompt,
     anchorImagePath,
     outputPath: unitOutputPath,
     endFrameImagePath: endFramePath,
+    referenceImagePaths: refPaths && refPaths.length > 0 ? refPaths : undefined,
   });
 
   const segments = splitRenderedUnitIntoShots(savedUnitPath, unit, new Map(shots.map(shot => [shot.shotNumber, shot])), sceneDir);
@@ -410,6 +591,46 @@ async function renderMultiShotUnit(
   });
 
   return shotPaths;
+}
+
+async function renderMultiShotUnitUntilSuccess(
+  client: VeniceClient,
+  series: SeriesState,
+  shots: ShotScript[],
+  unit: GenerationUnit,
+  sceneDir: string,
+  previousRenderedShotPath: string | undefined,
+  nextShotNumber: number | undefined,
+): Promise<string[]> {
+  let attempt = 1;
+
+  while (true) {
+    try {
+      if (attempt > 1) {
+        console.log(`  ${unit.unitId}: retrying multi-shot render (attempt ${attempt})`);
+      }
+
+      return await renderMultiShotUnit(
+        client,
+        series,
+        shots,
+        unit,
+        sceneDir,
+        previousRenderedShotPath,
+        nextShotNumber,
+      );
+    } catch (err) {
+      if (err instanceof VeniceRequestError) {
+        console.warn(`  ${unit.unitId}: multi-shot attempt ${attempt} failed (HTTP ${err.status}): ${err.message}`);
+        console.warn(`  Error body: ${JSON.stringify(err.body, null, 2)}`);
+      } else {
+        console.warn(`  ${unit.unitId}: multi-shot attempt ${attempt} failed - ${err}`);
+      }
+      console.warn(`  ${unit.unitId}: keeping multi-shot strategy, retrying in ${(MULTISHOT_RETRY_DELAY_MS / 1000).toFixed(0)}s`);
+      attempt += 1;
+      await sleep(MULTISHOT_RETRY_DELAY_MS);
+    }
+  }
 }
 
 export interface GenerateEpisodeVideosResult {
@@ -449,7 +670,7 @@ export async function generateEpisodeVideos(
           previousRenderedShotPath,
           nextShotNumber,
         )
-        : await renderMultiShotUnit(
+        : await renderMultiShotUnitUntilSuccess(
           client,
           series,
           unitShots,
@@ -465,35 +686,6 @@ export async function generateEpisodeVideos(
       }
       console.log('');
     } catch (err) {
-      if (unit.unitType === 'kling-multishot' && unit.fallbackToSingles) {
-        console.warn(`  ${unit.unitId}: multi-shot render failed, falling back to single shots - ${err}`);
-        for (const shot of unitShots) {
-          const singleUnit: GenerationUnit = {
-            ...unit,
-            unitId: `${unit.unitId}-fallback-${String(shot.shotNumber).padStart(3, '0')}`,
-            unitType: 'single',
-            shotNumbers: [shot.shotNumber],
-            outputFile: `shot-${String(shot.shotNumber).padStart(3, '0')}.mp4`,
-            fallbackToSingles: false,
-          };
-          const shotPaths = await renderSingleShotUnit(
-            client,
-            series,
-            shot,
-            singleUnit,
-            sceneDir,
-            previousRenderedShotPath,
-            nextShotNumber,
-          );
-          if (shotPaths.length > 0) {
-            videoPaths.push(...shotPaths);
-            previousRenderedShotPath = shotPaths[shotPaths.length - 1];
-          }
-        }
-        console.log('');
-        continue;
-      }
-
       throw err;
     }
   }

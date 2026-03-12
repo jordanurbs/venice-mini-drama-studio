@@ -285,6 +285,39 @@ export class VeniceClient {
     throw lastError ?? new Error("Venice API request failed after all retries.");
   }
 
+  /**
+   * Send a chat completion request with multimodal content (text + images).
+   * Uses the OpenAI-compatible chat completions endpoint.
+   */
+  async chatWithVision(
+    model: string,
+    systemPrompt: string,
+    imageDataUris: string[],
+    userPrompt: string,
+  ): Promise<string> {
+    const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+    for (const uri of imageDataUris) {
+      content.push({ type: 'image_url', image_url: { url: uri } });
+    }
+    content.push({ type: 'text', text: userPrompt });
+
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content },
+      ],
+      max_tokens: 2000,
+      temperature: 0.3,
+    };
+
+    const response = await this.post<{
+      choices: Array<{ message: { content: string } }>;
+    }>('/api/v1/chat/completions', body as unknown as Record<string, unknown>);
+
+    return response.choices?.[0]?.message?.content ?? '';
+  }
+
   // ---- Internals ----------------------------------------------------------
 
   /**

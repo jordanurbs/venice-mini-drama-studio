@@ -47,6 +47,7 @@ export interface EpisodeScript {
   title: string;
   seriesName: string;
   totalDuration: string;
+  status?: 'draft' | 'approved';
   shots: ShotScript[];
 }
 
@@ -101,6 +102,43 @@ export interface ShotScript {
    * planner heuristics.
    */
   continuityPriority?: 'identity' | 'continuity' | 'balanced';
+  /**
+   * Optional title treatment that should fade in over the ending of this shot
+   * during final assembly, rather than as a separate standalone clip.
+   */
+  titleOverlay?: {
+    text: string;
+    fadeInSec?: number;
+    holdSec?: number;
+  };
+  /**
+   * Per-episode wardrobe overrides keyed by uppercase character name.
+   * When present, prompt builders use these instead of the character's
+   * default wardrobe from series.json.
+   */
+  episodeWardrobe?: Record<string, string>;
+  /**
+   * Skip multi-edit refinement for this shot during storyboard generation.
+   * Useful for empty establishing shots that get contaminated by style passes.
+   */
+  skipRefine?: boolean;
+  /**
+   * Pass character reference images as structured `elements` with
+   * @Element1/@Element2 prompt references. Requires a model in
+   * MODELS_SUPPORTING_ELEMENTS.
+   */
+  useElements?: boolean;
+  /**
+   * Pass character reference images as flat `reference_image_urls` array
+   * (up to 4). Requires a model in MODELS_SUPPORTING_REFERENCE_IMAGES.
+   */
+  useReferenceImages?: boolean;
+  /**
+   * Paths to scene reference images for style/environment consistency.
+   * Referenced in prompt as @Image1, @Image2, etc. Requires a model in
+   * MODELS_SUPPORTING_SCENE_IMAGES.
+   */
+  sceneImagePaths?: string[];
 }
 
 export type GenerationUnitType = 'single' | 'kling-multishot';
@@ -143,3 +181,35 @@ export const VIDEO_NO_MUSIC_SUFFIX = 'No background music. Only generate dialogu
 
 export const FEMALE_BASE_TRAITS = 'beautiful, elegant, hourglass figure, classy cleavage, skin showing, detailed features';
 export const MALE_BASE_TRAITS = 'extremely handsome, strong jawline, styled appearance, detailed features';
+
+export interface VideoElement {
+  frontalImageUrl?: string;
+  referenceImageUrls?: string[];
+  videoUrl?: string;
+}
+
+/**
+ * Models that support the `elements` parameter (structured character/object
+ * definitions with frontal_image_url, reference_image_urls, video_url).
+ * Prompt should reference them as @Element1, @Element2, etc.
+ */
+export const MODELS_SUPPORTING_ELEMENTS = new Set([
+  'kling-o3-r2v-image-to-video',
+]);
+
+/**
+ * Models that support the `reference_image_urls` parameter (flat array of
+ * up to 4 reference images for character/style consistency).
+ */
+export const MODELS_SUPPORTING_REFERENCE_IMAGES = new Set([
+  'kling-o3-r2v-image-to-video',
+  'vidu-q3-image-to-video',
+]);
+
+/**
+ * Models that support the `scene_image_urls` parameter (up to 4 scene
+ * reference images for style/environment). Reference as @Image1, @Image2.
+ */
+export const MODELS_SUPPORTING_SCENE_IMAGES = new Set([
+  'kling-o3-r2v-image-to-video',
+]);

@@ -3,16 +3,29 @@ import type {
   SeriesState,
   ShotScript,
   MiniDramaCharacter,
+  VideoElement,
 } from '../series/types.js';
-import { VIDEO_NO_MUSIC_SUFFIX, FEMALE_BASE_TRAITS, MALE_BASE_TRAITS } from '../series/types.js';
+import {
+  VIDEO_NO_MUSIC_SUFFIX,
+  FEMALE_BASE_TRAITS,
+  MALE_BASE_TRAITS,
+  KLING_MULTISHOT_MODEL,
+  MODELS_SUPPORTING_ELEMENTS,
+  MODELS_SUPPORTING_REFERENCE_IMAGES,
+  MODELS_SUPPORTING_SCENE_IMAGES,
+} from '../series/types.js';
 import type { AestheticProfile } from '../storyboard/prompt-builder.js';
-import { KLING_MULTISHOT_MODEL } from '../series/types.js';
 import { parseShotDuration } from './generation-planner.js';
 
 export interface MiniDramaImagePrompt {
   prompt: string;
   negativePrompt: string;
   seed?: number;
+}
+
+export interface CharacterElementSlot {
+  characterName: string;
+  elementIndex: number;
 }
 
 export interface MiniDramaVideoPrompt {
@@ -23,6 +36,13 @@ export interface MiniDramaVideoPrompt {
   imageUrl?: string;
   endImageUrl?: string;
   referenceImageUrls?: string[];
+  /**
+   * Character-to-element mapping. The video generator resolves these to
+   * actual image paths and builds the `elements` API array.
+   */
+  characterElements?: CharacterElementSlot[];
+  /** File paths for scene reference images (@Image1, @Image2). */
+  sceneImagePaths?: string[];
 }
 
 const NEGATIVE_PROMPT =
@@ -31,6 +51,9 @@ const NEGATIVE_PROMPT =
   'deformed, blurry, bad anatomy, bad hands, extra fingers, mutation, ' +
   'poorly drawn face, watermark, text, signature, low quality, ugly, ' +
   'umbrella, holding umbrella';
+
+const NO_PEOPLE_NEGATIVE =
+  NEGATIVE_PROMPT + ', people, person, human, figure, silhouette, crowd, pedestrian, bystander';
 
 const CAMERA_TERMS: Record<string, string> = {
   'static': 'locked-off static shot',
@@ -73,37 +96,43 @@ export function buildImagePrompt(
   parts.push(`STYLE: ${aestheticStr}.`);
   parts.push('Single cinematic frame, one continuous image, NOT a comic panel layout, NO panel borders, NO speech bubbles, NO text overlays.');
 
-  // Anti-camera-facing for non-portrait shot types
   const portraitTypes = new Set(['close-up', 'reaction']);
-  if (!portraitTypes.has(shot.type)) {
+  const isPortrait = portraitTypes.has(shot.type);
+  const isEmptyScene = shot.characters.length === 0;
+  const isSingleCharAction = !isPortrait && !isEmptyScene && shot.characters.length === 1
+    && (shot.type === 'action' || shot.type === 'dialogue' || shot.type === 'establishing');
+
+  if (!isPortrait) {
     parts.push('Characters are engaged in the scene, NOT looking at the camera.');
   }
 
-  // Scene content -- use panelDescription (single-frame) if available,
-  // otherwise fall back to description (which may contain sequential action)
+  if (isSingleCharAction) {
+    parts.push('This is NOT a portrait or headshot. The environment, props, and action are equally important as the character. Show the full scene composition.');
+  }
+
   parts.push(`Camera: ${shot.cameraMovement}.`);
   parts.push(shot.panelDescription ?? shot.description);
 
-  // Characters with full descriptions including base traits
-  if (shot.characters.length > 0) {
+  if (isEmptyScene) {
+    parts.push('Empty environment, no people present, no human figures, uninhabited scene.');
+  } else {
     for (const charName of shot.characters) {
       const char = series.characters.find(c => c.name.toUpperCase() === charName.toUpperCase());
       if (char) {
         const baseTraits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
-        parts.push(`${char.name} (${baseTraits}): ${char.description}, wearing ${char.wardrobe}.`);
+        const wardrobe = shot.episodeWardrobe?.[charName.toUpperCase()] ?? char.wardrobe;
+        parts.push(`${char.name} (${baseTraits}): ${char.description}, wearing ${wardrobe}.`);
       }
     }
   }
 
-  // Repeat aesthetic at end to bookend the prompt
   parts.push(`STYLE REMINDER: ${aestheticStr}.`);
 
-  // Use series-level aesthetic seed for consistency across all shots
   const seed = series.aestheticSeed ?? undefined;
 
   return {
     prompt: parts.join(' ').trim(),
-    negativePrompt: NEGATIVE_PROMPT,
+    negativePrompt: isEmptyScene ? NO_PEOPLE_NEGATIVE : NEGATIVE_PROMPT,
     seed,
   };
 }
@@ -126,6 +155,30 @@ function buildCharacterAnchorText(characters: MiniDramaCharacter[]): string {
   return `Core subjects: ${anchors.join('; ')}.`;
 }
 
+function buildCompactAestheticString(aesthetic: AestheticProfile): string {
+  return [
+    aesthetic.style,
+    aesthetic.palette,
+    aesthetic.lighting,
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function summarizeCharacterForMultiShot(char: MiniDramaCharacter): string {
+  const wardrobe = char.wardrobe.split(',').slice(0, 2).join(',').trim();
+
+  if (char.name === 'MARCUS') {
+    return `${char.name}: handsome corporate executive, dark swept-back hair, charcoal three-piece suit`;
+  }
+
+  if (char.name === 'SERA') {
+    return `${char.name}: ethereal woman, long dark hair with violet highlights, sleeveless black cocktail dress, violet-grey eyes`;
+  }
+
+  return `${char.name}: ${char.age}, ${wardrobe || char.wardrobe}`;
+}
+
 export function buildVideoPrompt(
   shot: ShotScript,
   series: SeriesState,
@@ -134,12 +187,41 @@ export function buildVideoPrompt(
     throw new Error('Series aesthetic must be set before generating videos.');
   }
 
+  const modelId = shot.videoModel === 'action'
+    ? series.videoDefaults.actionModel
+    : series.videoDefaults.atmosphereModel;
+
+  const useElements = shot.useElements && MODELS_SUPPORTING_ELEMENTS.has(modelId);
+  const useRefs = shot.useReferenceImages && MODELS_SUPPORTING_REFERENCE_IMAGES.has(modelId);
+
+  const resolvedCharacters = shot.characters
+    .map(name => series.characters.find(c => c.name.toUpperCase() === name.toUpperCase()))
+    .filter((c): c is MiniDramaCharacter => Boolean(c));
+
+  let characterElements: CharacterElementSlot[] | undefined;
+
+  if (useElements && resolvedCharacters.length > 0) {
+    characterElements = resolvedCharacters.slice(0, 4).map((char, index) => ({
+      characterName: char.name,
+      elementIndex: index + 1,
+    }));
+  }
+
   const parts: string[] = [];
 
   const cameraTerm = CAMERA_TERMS[shot.cameraMovement.toLowerCase()] ?? shot.cameraMovement;
   parts.push(`${cameraTerm}.`);
 
-  parts.push(shot.description);
+  if (useElements && characterElements) {
+    let desc = shot.description;
+    for (const slot of characterElements) {
+      const re = new RegExp(`\\b${slot.characterName}\\b`, 'gi');
+      desc = desc.replace(re, `@Element${slot.elementIndex}`);
+    }
+    parts.push(desc);
+  } else {
+    parts.push(shot.description);
+  }
 
   if (shot.dialogue) {
     const speakingChar = series.characters.find(
@@ -149,11 +231,22 @@ export function buildVideoPrompt(
       ? ` (voice: ${speakingChar.voiceDescription})`
       : '';
     const delivery = shot.dialogue.delivery || 'in character';
-    parts.push(`${shot.dialogue.character}${voiceDesc} says ${delivery}: "${shot.dialogue.line}"`);
+    const charRef = useElements && characterElements
+      ? (characterElements.find(s => s.characterName.toUpperCase() === shot.dialogue!.character.toUpperCase())
+        ? `@Element${characterElements.find(s => s.characterName.toUpperCase() === shot.dialogue!.character.toUpperCase())!.elementIndex}`
+        : shot.dialogue.character)
+      : shot.dialogue.character;
+
+    parts.push(`${charRef}${voiceDesc} says ${delivery}: "${shot.dialogue.line}"`);
   }
 
   if (shot.sfx) {
     parts.push(`Sound of ${shot.sfx}.`);
+  }
+
+  if (shot.sceneImagePaths && shot.sceneImagePaths.length > 0 && MODELS_SUPPORTING_SCENE_IMAGES.has(modelId)) {
+    const refs = shot.sceneImagePaths.slice(0, 4).map((_, i) => `@Image${i + 1}`);
+    parts.push(`Scene style references: ${refs.join(', ')}.`);
   }
 
   parts.push(buildAestheticString(series.aesthetic) + '.');
@@ -161,15 +254,14 @@ export function buildVideoPrompt(
 
   const videoPrompt = parts.join(' ');
 
-  const modelId = shot.videoModel === 'action'
-    ? series.videoDefaults.actionModel
-    : series.videoDefaults.atmosphereModel;
-
   return {
     prompt: videoPrompt,
     model: modelId,
     duration: shot.duration,
     audio: true,
+    characterElements,
+    sceneImagePaths: shot.sceneImagePaths,
+    referenceImageUrls: useRefs ? [] : undefined,
   };
 }
 
@@ -189,10 +281,11 @@ export function buildKlingMultiShotPrompt(
     .filter((char): char is MiniDramaCharacter => Boolean(char));
 
   const parts: string[] = [];
-  const anchorText = buildCharacterAnchorText(uniqueCharacters);
-  if (anchorText) parts.push(anchorText);
+  if (uniqueCharacters.length > 0) {
+    parts.push(`Subjects: ${uniqueCharacters.map(summarizeCharacterForMultiShot).join('; ')}.`);
+  }
 
-  parts.push('Generate this as one continuous multi-shot sequence with clearly distinct cinematic beats and stable subject continuity.');
+  parts.push('One continuous multi-shot rooftop sequence. Keep faces, wardrobe, and rain continuity stable.');
 
   for (let index = 0; index < shots.length; index++) {
     const shot = shots[index];
@@ -203,14 +296,8 @@ export function buildKlingMultiShotPrompt(
     shotParts.push(shot.description);
 
     if (shot.dialogue) {
-      const speakingChar = series.characters.find(
-        c => c.name.toUpperCase() === shot.dialogue!.character.toUpperCase(),
-      );
-      const voiceDesc = speakingChar?.voiceDescription
-        ? `, voice: ${speakingChar.voiceDescription}`
-        : '';
       const delivery = shot.dialogue.delivery || 'in character';
-      shotParts.push(`[Character: ${shot.dialogue.character}${voiceDesc}, ${delivery}] "${shot.dialogue.line}"`);
+      shotParts.push(`${shot.dialogue.character}, ${delivery}: "${shot.dialogue.line}"`);
     }
 
     if (shot.sfx) {
@@ -220,11 +307,28 @@ export function buildKlingMultiShotPrompt(
     parts.push(shotParts.join(' '));
   }
 
-  parts.push(buildAestheticString(series.aesthetic) + '.');
+  parts.push(`Visual style: ${buildCompactAestheticString(series.aesthetic)}.`);
   parts.push(VIDEO_NO_MUSIC_SUFFIX);
 
+  let prompt = parts.join(' ').trim();
+
+  const VENICE_PROMPT_LIMIT = 2500;
+  if (prompt.length > VENICE_PROMPT_LIMIT) {
+    console.warn(`  Multi-shot prompt is ${prompt.length} chars (limit: ${VENICE_PROMPT_LIMIT}). Truncating aesthetic to fit.`);
+    const overBy = prompt.length - VENICE_PROMPT_LIMIT + 20;
+    const aestheticPart = buildCompactAestheticString(series.aesthetic);
+    const truncatedAesthetic = aestheticPart.slice(0, Math.max(40, aestheticPart.length - overBy));
+    parts[parts.length - 2] = `Visual style: ${truncatedAesthetic}.`;
+    prompt = parts.join(' ').trim();
+
+    if (prompt.length > VENICE_PROMPT_LIMIT) {
+      prompt = prompt.slice(0, VENICE_PROMPT_LIMIT);
+      console.warn(`  Prompt still over limit after truncation. Hard-cut to ${VENICE_PROMPT_LIMIT} chars.`);
+    }
+  }
+
   return {
-    prompt: parts.join(' ').trim(),
+    prompt,
     model: KLING_MULTISHOT_MODEL,
     duration: unit.duration,
     audio: true,

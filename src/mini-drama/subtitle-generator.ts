@@ -55,7 +55,9 @@ export function generateSubtitles(shots: ShotScript[], sceneDir?: string): Subti
       const wordsPerSecond = 2.5;
       const speakDuration = Math.min(words.length / wordsPerSecond + 0.5, shotDuration - 0.3);
 
-      const startOffset = 0.3;
+      // AI dialogue usually starts well after the cut; bias subtitles as late as
+      // possible while still letting the full line finish before the shot ends.
+      const startOffset = Math.max(0.3, shotDuration - speakDuration - 0.15);
       const start = currentTime + startOffset;
       const end = currentTime + startOffset + speakDuration;
 

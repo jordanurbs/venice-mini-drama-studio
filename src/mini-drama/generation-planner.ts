@@ -36,6 +36,21 @@ function isTitleLikeInsert(shot: ShotScript): boolean {
   return shot.type === 'insert' || /title card/i.test(shot.description);
 }
 
+function isEstablishingShot(shot: ShotScript): boolean {
+  return shot.type === 'establishing' || shot.characters.length === 0;
+}
+
+function isSceneBoundary(previous: ShotScript | undefined, current: ShotScript): boolean {
+  if (!previous) return true;
+  if (isEstablishingShot(current)) return true;
+  if (current.characters.length === 0 && previous.characters.length > 0) return true;
+  const prevChars = new Set(previous.characters.map(n => n.toUpperCase()));
+  const currChars = new Set(current.characters.map(n => n.toUpperCase()));
+  const overlap = [...currChars].some(c => prevChars.has(c));
+  if (!overlap && currChars.size > 0 && prevChars.size > 0) return true;
+  return false;
+}
+
 function isIdentitySensitive(shot: ShotScript): boolean {
   return shot.type === 'close-up' || shot.type === 'reaction';
 }
@@ -81,6 +96,7 @@ function chooseStartFrameStrategy(
 ): GenerationUnit['startFrameStrategy'] {
   if (!previousShot) return 'panel';
   if (firstShot.continuityPriority === 'identity') return 'panel';
+  if (isSceneBoundary(previousShot, firstShot)) return 'panel';
   if (hasNewCharacters(previousShot, firstShot)) return 'panel';
   if (isIdentitySensitive(firstShot) && firstShot.continuityPriority !== 'continuity') return 'panel';
   return CHAIN_TRANSITIONS.has(previousShot.transition.toUpperCase())
@@ -131,6 +147,12 @@ function canUseMultiShotWindow(window: ShotScript[]): { ok: boolean; reasons: st
   }
   if (window.some(isTitleLikeInsert)) {
     return { ok: false, reasons: ['insert or title shot in window'] };
+  }
+  if (isEstablishingShot(window[0])) {
+    return { ok: false, reasons: ['window starts with establishing/empty shot -- keep separate'] };
+  }
+  if (window.some(isEstablishingShot)) {
+    return { ok: false, reasons: ['establishing/empty shot mixed into dialogue/action window'] };
   }
 
   const totalDuration = window.reduce((sum, shot) => sum + parseShotDuration(shot.duration), 0);
@@ -191,7 +213,7 @@ function buildMultiShotUnit(
     startFrameStrategy: chooseStartFrameStrategy(previousShot, first),
     endFrameStrategy: chooseEndFrameStrategy(last, nextShot),
     decisionReasons: reasons,
-    fallbackToSingles: true,
+    fallbackToSingles: false,
   };
 }
 
