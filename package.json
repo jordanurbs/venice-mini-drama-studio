@@ -2,13 +2,13 @@
   "name": "mini-drama-studio",
   "version": "1.0.0",
   "description": "Agent-first Venice-optimized mini-drama rig for vertical episodic AI video production",
-  "homepage": "https://github.com/AI-Captains-Academy/venice-mini-drama-studio",
+  "homepage": "https://github.com/jordanurbs/venice-mini-drama-studio",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AI-Captains-Academy/venice-mini-drama-studio.git"
+    "url": "git+https://github.com/jordanurbs/venice-mini-drama-studio.git"
   },
   "bugs": {
-    "url": "https://github.com/AI-Captains-Academy/venice-mini-drama-studio/issues"
+    "url": "https://github.com/jordanurbs/venice-mini-drama-studio/issues"
   },
   "type": "module",
   "main": "dist/mini-drama/cli.js",
