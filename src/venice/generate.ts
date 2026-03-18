@@ -18,7 +18,7 @@ import type {
 // ---- Constants ------------------------------------------------------------
 
 const GENERATE_PATH = "/api/v1/image/generate";
-const DEFAULT_MODEL = "nano-banana-pro";
+const DEFAULT_MODEL = "nano-banana-2";
 const DEFAULT_RESOLUTION = "1K";
 const DEFAULT_ASPECT_RATIO = "1:1";
 

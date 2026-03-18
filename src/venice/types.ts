@@ -13,7 +13,7 @@ export type InitImageMode = "IMAGE_STRENGTH" | "STEP_SCHEDULE";
 
 /** Request body for the image generation endpoint. */
 export interface ImageGenerateRequest {
-  /** Model identifier (e.g. "nano-banana-pro"). */
+  /** Model identifier (e.g. "nano-banana-2"). */
   model: string;
 
   /** Text prompt describing the desired image. */
@@ -174,7 +174,7 @@ export interface GenerateWithReferencesOptions {
   /** Suppress Venice watermark. */
   hide_watermark?: boolean;
 
-  /** Model override (default "nano-banana-pro"). */
+  /** Model override (default "nano-banana-2"). */
   model?: string;
 
   /**

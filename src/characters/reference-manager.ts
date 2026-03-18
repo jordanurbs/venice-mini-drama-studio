@@ -44,7 +44,7 @@ export interface CharacterLock {
 // ---- Internal constants ---------------------------------------------------
 
 /** Default model for reference image generation. */
-const DEFAULT_MODEL = "nano-banana-pro";
+const DEFAULT_MODEL = "nano-banana-2";
 
 /** Default resolution and aspect ratio for character reference sheets. */
 const REF_RESOLUTION = "1K";

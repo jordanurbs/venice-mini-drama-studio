@@ -15,7 +15,7 @@ import type {
 // ---- Constants ------------------------------------------------------------
 
 const EDIT_PATH = "/api/v1/images/edit";
-const DEFAULT_MODEL = "nano-banana-pro";
+const DEFAULT_MODEL = "nano-banana-2";
 
 // ---- Public options type --------------------------------------------------
 
@@ -42,7 +42,7 @@ export interface EditImageOptions {
    */
   strength?: number;
 
-  /** Model override.  Defaults to "nano-banana-pro". */
+  /** Model override. Defaults to "nano-banana-2". */
   model?: string;
 
   /** Number of diffusion steps. */

@@ -122,7 +122,7 @@ const DEFAULT_RESOLUTION = "1K";
 const DEFAULT_ASPECT_RATIO = "16:9";
 
 /** Model used for generation. */
-const DEFAULT_MODEL = "nano-banana-pro";
+const DEFAULT_MODEL = "nano-banana-2";
 
 /** Diffusion steps -- higher = better quality, slower. */
 const DEFAULT_STEPS = 30;
