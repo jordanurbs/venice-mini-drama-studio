@@ -165,6 +165,10 @@ async function renderVideoFile(
     body.resolution = '720p';
   }
 
+  if (prompt.model.includes('reference-to-video')) {
+    body.aspect_ratio = '9:16';
+  }
+
   if (elements && elements.length > 0 && MODELS_SUPPORTING_ELEMENTS.has(prompt.model)) {
     const apiElements = elements.map(el => {
       const out: Record<string, unknown> = {};
@@ -196,11 +200,11 @@ async function renderVideoFile(
 
   if (sceneImagePaths && sceneImagePaths.length > 0
     && MODELS_SUPPORTING_SCENE_IMAGES.has(prompt.model)) {
-    body.scene_image_urls = sceneImagePaths
+    body.image_urls = sceneImagePaths
       .slice(0, 4)
       .map(p => p.startsWith('data:') ? p : (fileToDataUri(p) ?? p))
       .filter(Boolean);
-    console.log(`  Scene images: ${(body.scene_image_urls as string[]).length}`);
+    console.log(`  Scene images: ${(body.image_urls as string[]).length}`);
   }
 
   console.log(`  Queueing video: model=${prompt.model}, duration=${prompt.duration}, prompt=${(prompt.prompt).length} chars`);
@@ -277,14 +281,25 @@ function resolveCharacterElements(
   const charDir = (name: string) =>
     join(series.outputDir, 'characters', name.toLowerCase());
 
-  if (prompt.characterElements && prompt.characterElements.length > 0
+  const autoElements = prompt.modelResolution?.autoUseElements ?? false;
+  const autoRefs = prompt.modelResolution?.autoUseReferenceImages ?? false;
+
+  if ((prompt.characterElements && prompt.characterElements.length > 0 || autoElements)
     && MODELS_SUPPORTING_ELEMENTS.has(prompt.model)) {
-    const elements: VideoElement[] = prompt.characterElements.map(slot => {
+    const slots = prompt.characterElements && prompt.characterElements.length > 0
+      ? prompt.characterElements
+      : resolvedChars.slice(0, 4).map((char, index) => ({
+        characterName: char.name,
+        elementIndex: index + 1,
+      }));
+
+    const elements: VideoElement[] = slots.map(slot => {
       const dir = charDir(slot.characterName);
       const frontal = join(dir, 'front.png');
-      const refs = ['three-quarter.png', 'profile.png']
+      const refs = ['three-quarter.png', 'profile.png', 'back.png']
         .map(f => join(dir, f))
-        .filter(p => existsSync(p));
+        .filter(p => existsSync(p))
+        .slice(0, 3);
 
       return {
         frontalImageUrl: existsSync(frontal) ? frontal : undefined,
@@ -294,7 +309,8 @@ function resolveCharacterElements(
     return { elements };
   }
 
-  if (shot.useReferenceImages && MODELS_SUPPORTING_REFERENCE_IMAGES.has(prompt.model)) {
+  if ((shot.useReferenceImages || autoRefs)
+    && MODELS_SUPPORTING_REFERENCE_IMAGES.has(prompt.model)) {
     const paths = resolvedChars
       .slice(0, 4)
       .flatMap(c => {
@@ -442,6 +458,7 @@ async function renderSingleShotUnit(
   sceneDir: string,
   previousRenderedShotPath: string | undefined,
   nextShotNumber: number | undefined,
+  previousShot?: ShotScript,
 ): Promise<string[]> {
   const panelPath = getShotPanelPath(sceneDir, shot.shotNumber);
   if (!existsSync(panelPath)) {
@@ -462,8 +479,16 @@ async function renderSingleShotUnit(
     return [videoPath];
   }
 
-  const videoPrompt = buildVideoPrompt(shot, series);
+  const videoPrompt = buildVideoPrompt(shot, series, previousShot);
   unit.model = videoPrompt.model;
+
+  if (videoPrompt.modelResolution) {
+    const res = videoPrompt.modelResolution;
+    console.log(`  Model: ${res.modelId}${res.upgraded ? ` (upgraded: ${res.reason})` : ''}`);
+    if (res.autoUseElements) console.log('  Auto-enabled: elements (character identity anchoring)');
+    if (res.autoUseReferenceImages) console.log('  Auto-enabled: reference images');
+  }
+
   const anchorImagePath = chooseAnchorImagePath(unit, sceneDir, videoPath, previousRenderedShotPath);
   const endFramePath = chooseEndFrameImagePath(unit, sceneDir, nextShotNumber);
 
@@ -648,6 +673,7 @@ export async function generateEpisodeVideos(
   const videoPaths: string[] = [];
   const shotsByNumber = new Map(shots.map(shot => [shot.shotNumber, shot]));
   let previousRenderedShotPath: string | undefined;
+  let previousShot: ShotScript | undefined;
 
   for (let unitIndex = 0; unitIndex < plan.units.length; unitIndex++) {
     const unit = plan.units[unitIndex];
@@ -669,6 +695,7 @@ export async function generateEpisodeVideos(
           sceneDir,
           previousRenderedShotPath,
           nextShotNumber,
+          previousShot,
         )
         : await renderMultiShotUnitUntilSuccess(
           client,
@@ -684,6 +711,7 @@ export async function generateEpisodeVideos(
         videoPaths.push(...savedPaths);
         previousRenderedShotPath = savedPaths[savedPaths.length - 1];
       }
+      previousShot = unitShots[unitShots.length - 1];
       console.log('');
     } catch (err) {
       throw err;

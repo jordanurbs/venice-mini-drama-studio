@@ -30,6 +30,7 @@ import {
   MALE_BASE_TRAITS,
   DEFAULT_ACTION_MODEL,
   DEFAULT_ATMOSPHERE_MODEL,
+  DEFAULT_CHARACTER_CONSISTENCY_MODEL,
 } from '../series/types.js';
 import type { AestheticProfile } from '../storyboard/prompt-builder.js';
 import { VeniceClient } from '../venice/client.js';
@@ -470,6 +471,12 @@ Your task is to write a complete episode script as a JSON object. Follow the exa
 - Use the correct videoModel ("action" for movement/dialogue, "atmosphere" for establishing/static)
 - End with a title card shot (3s, type "insert", FADE transition)
 
+IMPORTANT: Every shot MUST include an "environment" field. This controls whether the pipeline uses the series' dark/rainy aesthetic or adapts it for bright daytime scenes. Values:
+- "DAY_INTERIOR" -- bright indoor scene (café, office, apartment in daylight)
+- "DAY_EXTERIOR" -- bright outdoor scene (street, park in daylight)
+- "NIGHT_INTERIOR" -- indoor scene at night (club, bar, dimly lit room)
+- "NIGHT_EXTERIOR" -- outdoor nighttime scene (street at night, rooftop at night)
+
 Respond with ONLY valid JSON matching this exact schema (no markdown, no code fences, no explanation):
 {
   "episode": <number>,
@@ -481,6 +488,7 @@ Respond with ONLY valid JSON matching this exact schema (no markdown, no code fe
     {
       "shotNumber": 1,
       "type": "establishing|dialogue|action|reaction|close-up|insert",
+      "environment": "DAY_INTERIOR|DAY_EXTERIOR|NIGHT_INTERIOR|NIGHT_EXTERIOR",
       "duration": "3s|5s|8s",
       "videoModel": "action|atmosphere",
       "description": "<full visual description>",
@@ -781,7 +789,7 @@ program
               series.aesthetic!.palette,
               series.aesthetic!.lighting,
             ].join(', ');
-            await refineStyleConsistency(client, imgPath, styleAnchorPath, aestheticStr, editModel);
+            await refineStyleConsistency(client, imgPath, styleAnchorPath, aestheticStr, editModel, shot.environment);
             const elapsed = ((Date.now() - refStart) / 1000).toFixed(1);
             console.log(`  ${progress} Shot ${shotNum}: style-refined (${elapsed}s)`);
           } catch (err) {
@@ -862,6 +870,8 @@ program
       charNames,
       opts.editModel as MultiEditModel,
       opts.prompt,
+      shot.episodeWardrobe,
+      shot.environment,
     );
 
     console.log(`\nPanel fixed. Review: ${panelPath}`);
@@ -1120,7 +1130,8 @@ program
     const generationPlan = buildGenerationPlan(script);
 
     console.log(`Generating videos for Episode ${opts.episode}: ${script.title}`);
-    console.log(`Models: action=${series.videoDefaults.actionModel}, atmosphere=${series.videoDefaults.atmosphereModel}\n`);
+    const ccModel = series.videoDefaults.characterConsistencyModel ?? DEFAULT_CHARACTER_CONSISTENCY_MODEL;
+    console.log(`Models: action=${series.videoDefaults.actionModel}, atmosphere=${series.videoDefaults.atmosphereModel}, character-consistency=${ccModel}\n`);
     console.log(`Generation units: ${generationPlan.units.length}`);
     const multiUnitCount = generationPlan.units.filter(unit => unit.unitType === 'kling-multishot').length;
     if (multiUnitCount > 0) {

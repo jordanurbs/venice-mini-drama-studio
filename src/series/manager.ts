@@ -10,6 +10,7 @@ import type {
 import {
   DEFAULT_ACTION_MODEL,
   DEFAULT_ATMOSPHERE_MODEL,
+  DEFAULT_CHARACTER_CONSISTENCY_MODEL,
 } from './types.js';
 
 const OUTPUT_BASE = resolve('output');
@@ -43,6 +44,7 @@ export function createSeries(
     videoDefaults: {
       actionModel: DEFAULT_ACTION_MODEL,
       atmosphereModel: DEFAULT_ATMOSPHERE_MODEL,
+      characterConsistencyModel: DEFAULT_CHARACTER_CONSISTENCY_MODEL,
     },
     outputDir,
     createdAt: now,

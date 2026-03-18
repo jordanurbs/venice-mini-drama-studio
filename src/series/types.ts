@@ -20,6 +20,13 @@ export interface SeriesState {
 export interface VideoModelDefaults {
   actionModel: string;
   atmosphereModel: string;
+  /**
+   * Model used when character identity consistency is critical (close-ups,
+   * reactions, new character entrances). Supports `elements` and
+   * `reference_image_urls` for reference-first generation.
+   * Falls back to `actionModel` when unset.
+   */
+  characterConsistencyModel?: string;
 }
 
 export interface MiniDramaCharacter {
@@ -51,11 +58,32 @@ export interface EpisodeScript {
   shots: ShotScript[];
 }
 
+/**
+ * Scene environment tag. The prompt builder uses this to automatically
+ * adapt the series aesthetic — stripping rain/dark terms for daytime
+ * scenes, adding anti-rain negative prompts, etc.
+ */
+export type ShotEnvironment =
+  | 'DAY_INTERIOR'
+  | 'DAY_EXTERIOR'
+  | 'NIGHT_INTERIOR'
+  | 'NIGHT_EXTERIOR';
+
+export const DAYTIME_ENVIRONMENTS = new Set<ShotEnvironment>(['DAY_INTERIOR', 'DAY_EXTERIOR']);
+export const INTERIOR_ENVIRONMENTS = new Set<ShotEnvironment>(['DAY_INTERIOR', 'NIGHT_INTERIOR']);
+
 export interface ShotScript {
   shotNumber: number;
   type: 'establishing' | 'dialogue' | 'action' | 'reaction' | 'insert' | 'close-up';
   duration: string;
   videoModel: 'action' | 'atmosphere';
+  /**
+   * Scene environment tag. Controls automatic aesthetic adaptation:
+   * - DAY_INTERIOR / DAY_EXTERIOR: strips rain/dark terms, adds bright overrides
+   * - NIGHT_INTERIOR / NIGHT_EXTERIOR: uses default series aesthetic
+   * When omitted, defaults to the series' canonical environment (usually NIGHT_EXTERIOR).
+   */
+  environment?: ShotEnvironment;
   description: string;
   /**
    * Optional single-frame description used only for panel (image) generation.
@@ -175,6 +203,7 @@ export interface GenerationPlan {
 
 export const DEFAULT_ACTION_MODEL = 'kling-v3-pro-image-to-video';
 export const DEFAULT_ATMOSPHERE_MODEL = 'veo3.1-fast-image-to-video';
+export const DEFAULT_CHARACTER_CONSISTENCY_MODEL = 'kling-o3-standard-reference-to-video';
 export const KLING_MULTISHOT_MODEL = 'kling-o3-pro-image-to-video';
 
 export const VIDEO_NO_MUSIC_SUFFIX = 'No background music. Only generate dialogue, ambient sound, and sound effects.';
@@ -194,7 +223,8 @@ export interface VideoElement {
  * Prompt should reference them as @Element1, @Element2, etc.
  */
 export const MODELS_SUPPORTING_ELEMENTS = new Set([
-  'kling-o3-r2v-image-to-video',
+  'kling-o3-standard-reference-to-video',
+  'kling-o3-pro-reference-to-video',
 ]);
 
 /**
@@ -202,14 +232,17 @@ export const MODELS_SUPPORTING_ELEMENTS = new Set([
  * up to 4 reference images for character/style consistency).
  */
 export const MODELS_SUPPORTING_REFERENCE_IMAGES = new Set([
-  'kling-o3-r2v-image-to-video',
+  'kling-o3-standard-reference-to-video',
+  'kling-o3-pro-reference-to-video',
   'vidu-q3-image-to-video',
 ]);
 
 /**
- * Models that support the `scene_image_urls` parameter (up to 4 scene
- * reference images for style/environment). Reference as @Image1, @Image2.
+ * Models that support the `image_urls` parameter (up to 4 scene/style
+ * reference images). Reference as @Image1, @Image2 in prompt.
+ * Note: Venice API uses `image_urls`, not `scene_image_urls`.
  */
 export const MODELS_SUPPORTING_SCENE_IMAGES = new Set([
-  'kling-o3-r2v-image-to-video',
+  'kling-o3-standard-reference-to-video',
+  'kling-o3-pro-reference-to-video',
 ]);

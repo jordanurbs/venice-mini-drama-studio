@@ -2,6 +2,7 @@ import type {
   GenerationUnit,
   SeriesState,
   ShotScript,
+  ShotEnvironment,
   MiniDramaCharacter,
   VideoElement,
 } from '../series/types.js';
@@ -10,9 +11,11 @@ import {
   FEMALE_BASE_TRAITS,
   MALE_BASE_TRAITS,
   KLING_MULTISHOT_MODEL,
+  DAYTIME_ENVIRONMENTS,
   MODELS_SUPPORTING_ELEMENTS,
   MODELS_SUPPORTING_REFERENCE_IMAGES,
   MODELS_SUPPORTING_SCENE_IMAGES,
+  DEFAULT_CHARACTER_CONSISTENCY_MODEL,
 } from '../series/types.js';
 import type { AestheticProfile } from '../storyboard/prompt-builder.js';
 import { parseShotDuration } from './generation-planner.js';
@@ -43,6 +46,8 @@ export interface MiniDramaVideoPrompt {
   characterElements?: CharacterElementSlot[];
   /** File paths for scene reference images (@Image1, @Image2). */
   sceneImagePaths?: string[];
+  /** How the model was selected — logged for transparency. */
+  modelResolution?: ModelResolution;
 }
 
 const NEGATIVE_PROMPT =
@@ -81,6 +86,133 @@ function buildAestheticString(aesthetic: AestheticProfile): string {
     .join(', ');
 }
 
+/**
+ * Determines if a shot should use daytime aesthetics. Uses the explicit
+ * `environment` field when set; falls back to panelDescription heuristics
+ * for backwards compatibility with scripts that don't have it yet.
+ */
+function isDaytimeShot(shot: ShotScript): boolean {
+  if (shot.environment) {
+    return DAYTIME_ENVIRONMENTS.has(shot.environment);
+  }
+  const sceneText = (shot.panelDescription ?? shot.description).toUpperCase();
+  return sceneText.includes('NO RAIN') || sceneText.includes('BRIGHT INDOOR') || sceneText.includes('DAYTIME');
+}
+
+/**
+ * Strips rain, dark-sky, and wet-surface terms from the aesthetic string
+ * so that daytime scenes aren't contaminated by the series' default
+ * nighttime cyberpunk aesthetic.
+ */
+function stripDarkAesthetic(aestheticStr: string): string {
+  return aestheticStr
+    .replace(/,?\s*rain rendered as[^,]*(?:,|$)/gi, ', ')
+    .replace(/,?\s*neon reflections on wet surfaces/gi, '')
+    .replace(/,?\s*volumetric light rays through rain/gi, ', soft volumetric light')
+    .replace(/,?\s*dark charcoal backgrounds\s*\([^)]*\)/gi, ', warm bright interior backgrounds')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/,\s*,/g, ',')
+    .trim();
+}
+
+export interface ModelResolution {
+  modelId: string;
+  upgraded: boolean;
+  reason: string;
+  autoUseElements: boolean;
+  autoUseReferenceImages: boolean;
+}
+
+const IDENTITY_SENSITIVE_TYPES = new Set(['close-up', 'reaction']);
+
+/**
+ * Intelligently selects the video model for a shot based on its
+ * characteristics. Upgrades from the default action/atmosphere model
+ * to the character-consistency model (O3 R2V) when identity anchoring
+ * is important — close-ups, reactions, new character entrances, or
+ * explicit opt-in via shot flags.
+ *
+ * When the resolved model supports elements or reference images,
+ * those capabilities are auto-enabled (the shot no longer needs
+ * manual `useElements`/`useReferenceImages` flags).
+ */
+export function resolveVideoModel(
+  shot: ShotScript,
+  series: SeriesState,
+  previousShot?: ShotScript,
+): ModelResolution {
+  const baseModel = shot.videoModel === 'action'
+    ? series.videoDefaults.actionModel
+    : series.videoDefaults.atmosphereModel;
+
+  const consistencyModel =
+    series.videoDefaults.characterConsistencyModel ?? DEFAULT_CHARACTER_CONSISTENCY_MODEL;
+
+  const hasCharacters = shot.characters.length > 0;
+
+  if (shot.useElements || shot.useReferenceImages) {
+    return {
+      modelId: consistencyModel,
+      upgraded: consistencyModel !== baseModel,
+      reason: 'explicit useElements/useReferenceImages requested',
+      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
+      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
+    };
+  }
+
+  if (!hasCharacters) {
+    return {
+      modelId: baseModel,
+      upgraded: false,
+      reason: 'no characters — prompt-first model',
+      autoUseElements: false,
+      autoUseReferenceImages: false,
+    };
+  }
+
+  if (IDENTITY_SENSITIVE_TYPES.has(shot.type)) {
+    return {
+      modelId: consistencyModel,
+      upgraded: consistencyModel !== baseModel,
+      reason: `identity-sensitive shot type (${shot.type})`,
+      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
+      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
+    };
+  }
+
+  if (shot.continuityPriority === 'identity') {
+    return {
+      modelId: consistencyModel,
+      upgraded: consistencyModel !== baseModel,
+      reason: 'continuityPriority set to identity',
+      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
+      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
+    };
+  }
+
+  if (previousShot) {
+    const prevChars = new Set(previousShot.characters.map(n => n.toUpperCase()));
+    const newCharsEntering = shot.characters.some(n => !prevChars.has(n.toUpperCase()));
+    if (newCharsEntering) {
+      return {
+        modelId: consistencyModel,
+        upgraded: consistencyModel !== baseModel,
+        reason: 'new character entering scene — reference anchoring needed',
+        autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
+        autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
+      };
+    }
+  }
+
+  return {
+    modelId: baseModel,
+    upgraded: false,
+    reason: 'default prompt-first model',
+    autoUseElements: false,
+    autoUseReferenceImages: false,
+  };
+}
+
 export function buildImagePrompt(
   shot: ShotScript,
   series: SeriesState,
@@ -89,10 +221,15 @@ export function buildImagePrompt(
     throw new Error('Series aesthetic must be set before generating images.');
   }
 
-  const aestheticStr = buildAestheticString(series.aesthetic);
+  const isDaytime = isDaytimeShot(shot);
+
+  let aestheticStr = buildAestheticString(series.aesthetic);
+  if (isDaytime) {
+    aestheticStr = stripDarkAesthetic(aestheticStr);
+  }
+
   const parts: string[] = [];
 
-  // Front-load the aesthetic and anti-comic directives
   parts.push(`STYLE: ${aestheticStr}.`);
   parts.push('Single cinematic frame, one continuous image, NOT a comic panel layout, NO panel borders, NO speech bubbles, NO text overlays.');
 
@@ -130,9 +267,14 @@ export function buildImagePrompt(
 
   const seed = series.aestheticSeed ?? undefined;
 
+  let negativePrompt = isEmptyScene ? NO_PEOPLE_NEGATIVE : NEGATIVE_PROMPT;
+  if (isDaytime) {
+    negativePrompt += ', rain, rain streaks, wet surfaces, wet pavement, dark sky, storm, night sky, outdoor rain, neon reflections on wet ground';
+  }
+
   return {
     prompt: parts.join(' ').trim(),
-    negativePrompt: isEmptyScene ? NO_PEOPLE_NEGATIVE : NEGATIVE_PROMPT,
+    negativePrompt,
     seed,
   };
 }
@@ -165,34 +307,31 @@ function buildCompactAestheticString(aesthetic: AestheticProfile): string {
     .join(', ');
 }
 
-function summarizeCharacterForMultiShot(char: MiniDramaCharacter): string {
-  const wardrobe = char.wardrobe.split(',').slice(0, 2).join(',').trim();
-
-  if (char.name === 'MARCUS') {
-    return `${char.name}: handsome corporate executive, dark swept-back hair, charcoal three-piece suit`;
-  }
-
-  if (char.name === 'SERA') {
-    return `${char.name}: ethereal woman, long dark hair with violet highlights, sleeveless black cocktail dress, violet-grey eyes`;
-  }
-
-  return `${char.name}: ${char.age}, ${wardrobe || char.wardrobe}`;
+function summarizeCharacterForMultiShot(
+  char: MiniDramaCharacter,
+  wardrobeOverride?: string,
+): string {
+  const wardrobe = wardrobeOverride ?? char.wardrobe;
+  const shortWardrobe = wardrobe.split(',').slice(0, 2).join(',').trim();
+  return `${char.name}: ${char.age}, ${char.description.split(',').slice(0, 3).join(',').trim()}, wearing ${shortWardrobe}`;
 }
 
 export function buildVideoPrompt(
   shot: ShotScript,
   series: SeriesState,
+  previousShot?: ShotScript,
 ): MiniDramaVideoPrompt {
   if (!series.aesthetic) {
     throw new Error('Series aesthetic must be set before generating videos.');
   }
 
-  const modelId = shot.videoModel === 'action'
-    ? series.videoDefaults.actionModel
-    : series.videoDefaults.atmosphereModel;
+  const resolution = resolveVideoModel(shot, series, previousShot);
+  const modelId = resolution.modelId;
 
-  const useElements = shot.useElements && MODELS_SUPPORTING_ELEMENTS.has(modelId);
-  const useRefs = shot.useReferenceImages && MODELS_SUPPORTING_REFERENCE_IMAGES.has(modelId);
+  const useElements = resolution.autoUseElements
+    || (shot.useElements && MODELS_SUPPORTING_ELEMENTS.has(modelId));
+  const useRefs = resolution.autoUseReferenceImages
+    || (shot.useReferenceImages && MODELS_SUPPORTING_REFERENCE_IMAGES.has(modelId));
 
   const resolvedCharacters = shot.characters
     .map(name => series.characters.find(c => c.name.toUpperCase() === name.toUpperCase()))
@@ -249,7 +388,12 @@ export function buildVideoPrompt(
     parts.push(`Scene style references: ${refs.join(', ')}.`);
   }
 
-  parts.push(buildAestheticString(series.aesthetic) + '.');
+  let aestheticStr = buildAestheticString(series.aesthetic);
+  if (isDaytimeShot(shot)) {
+    aestheticStr = stripDarkAesthetic(aestheticStr);
+    parts.push('Bright daytime scene, natural light, no rain.');
+  }
+  parts.push(aestheticStr + '.');
   parts.push(VIDEO_NO_MUSIC_SUFFIX);
 
   const videoPrompt = parts.join(' ');
@@ -262,6 +406,7 @@ export function buildVideoPrompt(
     characterElements,
     sceneImagePaths: shot.sceneImagePaths,
     referenceImageUrls: useRefs ? [] : undefined,
+    modelResolution: resolution,
   };
 }
 
@@ -274,18 +419,31 @@ export function buildKlingMultiShotPrompt(
     throw new Error('Series aesthetic must be set before generating videos.');
   }
 
-  const uniqueCharacters = Array.from(
+  const uniqueCharNames = Array.from(
     new Set(shots.flatMap(shot => shot.characters.map(name => name.toUpperCase()))),
-  )
+  );
+  const uniqueCharacters = uniqueCharNames
     .map(name => series.characters.find(char => char.name.toUpperCase() === name))
     .filter((char): char is MiniDramaCharacter => Boolean(char));
 
-  const parts: string[] = [];
-  if (uniqueCharacters.length > 0) {
-    parts.push(`Subjects: ${uniqueCharacters.map(summarizeCharacterForMultiShot).join('; ')}.`);
+  const wardrobeByChar = new Map<string, string>();
+  for (const shot of shots) {
+    if (!shot.episodeWardrobe) continue;
+    for (const [charName, wardrobe] of Object.entries(shot.episodeWardrobe)) {
+      if (!wardrobeByChar.has(charName.toUpperCase())) {
+        wardrobeByChar.set(charName.toUpperCase(), wardrobe);
+      }
+    }
   }
 
-  parts.push('One continuous multi-shot rooftop sequence. Keep faces, wardrobe, and rain continuity stable.');
+  const parts: string[] = [];
+  if (uniqueCharacters.length > 0) {
+    parts.push(`Subjects: ${uniqueCharacters.map(char =>
+      summarizeCharacterForMultiShot(char, wardrobeByChar.get(char.name.toUpperCase())),
+    ).join('; ')}.`);
+  }
+
+  parts.push('One continuous multi-shot sequence. Keep faces, wardrobe, and visual continuity stable.');
 
   for (let index = 0; index < shots.length; index++) {
     const shot = shots[index];
@@ -297,7 +455,13 @@ export function buildKlingMultiShotPrompt(
 
     if (shot.dialogue) {
       const delivery = shot.dialogue.delivery || 'in character';
-      shotParts.push(`${shot.dialogue.character}, ${delivery}: "${shot.dialogue.line}"`);
+      const speakingChar = series.characters.find(
+        c => c.name.toUpperCase() === shot.dialogue!.character.toUpperCase(),
+      );
+      const voiceDesc = speakingChar?.voiceDescription
+        ? ` (voice: ${speakingChar.voiceDescription})`
+        : '';
+      shotParts.push(`${shot.dialogue.character}${voiceDesc} says ${delivery}: "${shot.dialogue.line}"`);
     }
 
     if (shot.sfx) {
@@ -307,7 +471,13 @@ export function buildKlingMultiShotPrompt(
     parts.push(shotParts.join(' '));
   }
 
-  parts.push(`Visual style: ${buildCompactAestheticString(series.aesthetic)}.`);
+  const anyDaytime = shots.some(s => isDaytimeShot(s));
+  let compactAesthetic = buildCompactAestheticString(series.aesthetic);
+  if (anyDaytime) {
+    compactAesthetic = stripDarkAesthetic(compactAesthetic);
+    parts.push('Bright daytime scene, natural light, no rain.');
+  }
+  parts.push(`Visual style: ${compactAesthetic}.`);
   parts.push(VIDEO_NO_MUSIC_SUFFIX);
 
   let prompt = parts.join(' ').trim();

@@ -5,8 +5,8 @@ import { execSync } from 'node:child_process';
 import type { VeniceClient } from '../venice/client.js';
 import type { MultiEditModel } from '../venice/types.js';
 import { multiEditImage, loadImageAsDataUri } from '../venice/multi-edit.js';
-import type { SeriesState, ShotScript, MiniDramaCharacter } from '../series/types.js';
-import { FEMALE_BASE_TRAITS, MALE_BASE_TRAITS } from '../series/types.js';
+import type { SeriesState, ShotScript, ShotEnvironment, MiniDramaCharacter } from '../series/types.js';
+import { FEMALE_BASE_TRAITS, MALE_BASE_TRAITS, DAYTIME_ENVIRONMENTS } from '../series/types.js';
 import { getCharacterDir } from '../series/manager.js';
 
 /**
@@ -75,26 +75,53 @@ async function restoreAspectRatio(
   console.log(`  Restored aspect ratio: ${curW}x${curH} → ${targetWidth}x${targetHeight}`);
 }
 
-function buildCharacterFixPrompt(char: MiniDramaCharacter): string {
+function buildCharacterFixPrompt(
+  char: MiniDramaCharacter,
+  wardrobeOverride?: string,
+  environment?: ShotEnvironment,
+): string {
   const traits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+  const wardrobe = wardrobeOverride ?? char.wardrobe;
+  const isDaytime = environment && DAYTIME_ENVIRONMENTS.has(environment);
   return (
-    `Make the ${char.gender === 'female' ? 'woman' : 'man'} in the scene match the reference image's CHARACTER APPEARANCE ONLY. ` +
+    `Make the ${char.gender === 'female' ? 'woman' : 'man'} in the scene match the reference image's FACE AND BODY PROPORTIONS ONLY. ` +
     `Character: ${char.name}. ${traits}. ${char.fullDescription}. ` +
-    `Wearing: ${char.wardrobe}. ` +
+    `Wearing: ${wardrobe}. ` +
+    (wardrobeOverride
+      ? `IMPORTANT: The character's CLOTHING must be exactly as described above (${wardrobe}), NOT the outfit in the reference image. Match the face and body only. `
+      : '') +
+    (isDaytime
+      ? `IMPORTANT: This is a BRIGHT DAYTIME scene. Do NOT darken the image, do NOT add rain, wet surfaces, or dark skies. Keep the bright warm lighting. `
+      : '') +
     `CRITICAL: Keep the scene as a single continuous image. Do NOT copy the reference image's layout. ` +
     `Do NOT add text labels, annotations, inset panels, detail callouts, or multi-view compositions. ` +
     `Keep the scene composition, background, and other characters unchanged. ` +
-    `Only modify this character's face, hair, body, and clothing to match the reference.`
+    `Only modify this character's face, hair, body, and clothing to match the description.`
   );
 }
 
-function buildTwoCharacterFixPrompt(char1: MiniDramaCharacter, char2: MiniDramaCharacter): string {
+function buildTwoCharacterFixPrompt(
+  char1: MiniDramaCharacter,
+  char2: MiniDramaCharacter,
+  wardrobeOverrides?: Record<string, string>,
+  environment?: ShotEnvironment,
+): string {
   const traits1 = char1.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
   const traits2 = char2.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+  const wardrobe1 = wardrobeOverrides?.[char1.name.toUpperCase()] ?? char1.wardrobe;
+  const wardrobe2 = wardrobeOverrides?.[char2.name.toUpperCase()] ?? char2.wardrobe;
+  const hasOverride = wardrobeOverrides && Object.keys(wardrobeOverrides).length > 0;
+  const isDaytime = environment && DAYTIME_ENVIRONMENTS.has(environment);
   return (
-    `Make both characters match their reference images' CHARACTER APPEARANCE ONLY. ` +
-    `Image 2 is the reference for ${char1.name} (${traits1}, ${char1.fullDescription}, wearing ${char1.wardrobe}). ` +
-    `Image 3 is the reference for ${char2.name} (${traits2}, ${char2.fullDescription}, wearing ${char2.wardrobe}). ` +
+    `Make both characters match their reference images' FACE AND BODY PROPORTIONS ONLY. ` +
+    `Image 2 is the reference for ${char1.name} (${traits1}, ${char1.fullDescription}, wearing ${wardrobe1}). ` +
+    `Image 3 is the reference for ${char2.name} (${traits2}, ${char2.fullDescription}, wearing ${wardrobe2}). ` +
+    (hasOverride
+      ? `IMPORTANT: Characters' CLOTHING must match the descriptions above, NOT the outfits in the reference images. Match faces and bodies only. `
+      : '') +
+    (isDaytime
+      ? `IMPORTANT: This is a BRIGHT DAYTIME scene. Do NOT darken the image, do NOT add rain, wet surfaces, or dark skies. Keep the bright warm lighting. `
+      : '') +
     `CRITICAL: Keep the scene as a single continuous image. Do NOT copy the reference images' layout. ` +
     `Do NOT add text labels, annotations, inset panels, detail callouts, or multi-view compositions. ` +
     `Keep the scene composition and background unchanged. Fix character appearance only.`
@@ -108,11 +135,11 @@ export async function fixPanel(
   characterNames: string[],
   model?: MultiEditModel,
   customPrompt?: string,
+  episodeWardrobe?: Record<string, string>,
+  environment?: ShotEnvironment,
 ): Promise<string> {
-  // Convert WebP-disguised PNGs to real PNGs before reading dimensions
   await ensureRealPng(panelPath);
 
-  // Capture original dimensions before multi-edit squashes to 1024x1024
   const origDims = getImageDimensions(panelPath);
   const origW = origDims ? origDims[0] : 0;
   const origH = origDims ? origDims[1] : 0;
@@ -140,9 +167,9 @@ export async function fixPanel(
   if (customPrompt) {
     prompt = customPrompt;
   } else if (chars.length === 1) {
-    prompt = buildCharacterFixPrompt(chars[0]);
+    prompt = buildCharacterFixPrompt(chars[0], episodeWardrobe?.[chars[0].name.toUpperCase()], environment);
   } else {
-    prompt = buildTwoCharacterFixPrompt(chars[0], chars[1]);
+    prompt = buildTwoCharacterFixPrompt(chars[0], chars[1], episodeWardrobe, environment);
   }
 
   console.log(`  Multi-editing panel with ${chars.length} character reference(s)...`);
@@ -180,7 +207,7 @@ export async function refineWithReferences(
   model?: MultiEditModel,
 ): Promise<string> {
   if (shot.characters.length === 0) return panelPath;
-  return fixPanel(client, series, panelPath, shot.characters, model);
+  return fixPanel(client, series, panelPath, shot.characters, model, undefined, shot.episodeWardrobe, shot.environment);
 }
 
 /**
@@ -194,6 +221,7 @@ export async function refineStyleConsistency(
   styleAnchorPath: string,
   aesthetic: string,
   model?: MultiEditModel,
+  environment?: ShotEnvironment,
 ): Promise<string> {
   await ensureRealPng(panelPath);
   const origDims = getImageDimensions(panelPath);
@@ -203,9 +231,13 @@ export async function refineStyleConsistency(
   const panelDataUri = await loadImageAsDataUri(panelPath);
   const anchorDataUri = await loadImageAsDataUri(styleAnchorPath);
 
+  const isDaytime = environment && DAYTIME_ENVIRONMENTS.has(environment);
   const prompt =
     `Match the visual style of the reference image: same rendering style, color palette, line weight, and lighting treatment. ` +
     `Style: ${aesthetic}. ` +
+    (isDaytime
+      ? `IMPORTANT: This is a BRIGHT DAYTIME scene. Keep bright warm lighting. Do NOT add rain, dark skies, or wet surfaces. `
+      : '') +
     `CRITICAL: Keep the scene composition and content unchanged. Only harmonize the visual style. ` +
     `Do NOT add characters, people, text, labels, or inset panels. Do NOT change the scene's subject matter.`;
 
