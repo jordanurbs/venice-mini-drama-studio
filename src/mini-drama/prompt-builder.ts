@@ -76,7 +76,7 @@ const CAMERA_TERMS: Record<string, string> = {
 };
 
 function getCharacterPromptText(char: MiniDramaCharacter): string {
-  const baseTraits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+  const baseTraits = char.baseTraits ?? (char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS);
   return `${char.name} (${baseTraits}): ${char.fullDescription}`;
 }
 
@@ -123,23 +123,10 @@ export interface ModelResolution {
   autoUseReferenceImages: boolean;
 }
 
-const IDENTITY_SENSITIVE_TYPES = new Set(['close-up', 'reaction']);
-
-/**
- * Intelligently selects the video model for a shot based on its
- * characteristics. Upgrades from the default action/atmosphere model
- * to the character-consistency model (O3 R2V) when identity anchoring
- * is important — close-ups, reactions, new character entrances, or
- * explicit opt-in via shot flags.
- *
- * When the resolved model supports elements or reference images,
- * those capabilities are auto-enabled (the shot no longer needs
- * manual `useElements`/`useReferenceImages` flags).
- */
 export function resolveVideoModel(
   shot: ShotScript,
   series: SeriesState,
-  previousShot?: ShotScript,
+  _previousShot?: ShotScript,
 ): ModelResolution {
   const baseModel = shot.videoModel === 'action'
     ? series.videoDefaults.actionModel
@@ -149,16 +136,6 @@ export function resolveVideoModel(
     series.videoDefaults.characterConsistencyModel ?? DEFAULT_CHARACTER_CONSISTENCY_MODEL;
 
   const hasCharacters = shot.characters.length > 0;
-
-  if (shot.useElements || shot.useReferenceImages) {
-    return {
-      modelId: consistencyModel,
-      upgraded: consistencyModel !== baseModel,
-      reason: 'explicit useElements/useReferenceImages requested',
-      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
-      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
-    };
-  }
 
   if (!hasCharacters) {
     return {
@@ -170,46 +147,12 @@ export function resolveVideoModel(
     };
   }
 
-  if (IDENTITY_SENSITIVE_TYPES.has(shot.type)) {
-    return {
-      modelId: consistencyModel,
-      upgraded: consistencyModel !== baseModel,
-      reason: `identity-sensitive shot type (${shot.type})`,
-      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
-      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
-    };
-  }
-
-  if (shot.continuityPriority === 'identity') {
-    return {
-      modelId: consistencyModel,
-      upgraded: consistencyModel !== baseModel,
-      reason: 'continuityPriority set to identity',
-      autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
-      autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
-    };
-  }
-
-  if (previousShot) {
-    const prevChars = new Set(previousShot.characters.map(n => n.toUpperCase()));
-    const newCharsEntering = shot.characters.some(n => !prevChars.has(n.toUpperCase()));
-    if (newCharsEntering) {
-      return {
-        modelId: consistencyModel,
-        upgraded: consistencyModel !== baseModel,
-        reason: 'new character entering scene — reference anchoring needed',
-        autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
-        autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
-      };
-    }
-  }
-
   return {
-    modelId: baseModel,
-    upgraded: false,
-    reason: 'default prompt-first model',
-    autoUseElements: false,
-    autoUseReferenceImages: false,
+    modelId: consistencyModel,
+    upgraded: consistencyModel !== baseModel,
+    reason: 'characters present — R2V for identity anchoring',
+    autoUseElements: MODELS_SUPPORTING_ELEMENTS.has(consistencyModel),
+    autoUseReferenceImages: MODELS_SUPPORTING_REFERENCE_IMAGES.has(consistencyModel),
   };
 }
 
@@ -256,7 +199,7 @@ export function buildImagePrompt(
     for (const charName of shot.characters) {
       const char = series.characters.find(c => c.name.toUpperCase() === charName.toUpperCase());
       if (char) {
-        const baseTraits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+        const baseTraits = char.baseTraits ?? (char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS);
         const wardrobe = shot.episodeWardrobe?.[charName.toUpperCase()] ?? char.wardrobe;
         parts.push(`${char.name} (${baseTraits}): ${char.description}, wearing ${wardrobe}.`);
       }
@@ -290,7 +233,7 @@ function buildCharacterAnchorText(characters: MiniDramaCharacter[]): string {
   if (characters.length === 0) return '';
 
   const anchors = characters.map(char => {
-    const baseTraits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+    const baseTraits = char.baseTraits ?? (char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS);
     return `${char.name}: ${baseTraits}, ${char.fullDescription}, wearing ${char.wardrobe}`;
   });
 
@@ -510,7 +453,7 @@ export function buildCharacterReferencePrompt(
   aesthetic: AestheticProfile,
   angle: 'front' | 'three-quarter' | 'profile' | 'full-body',
 ): string {
-  const baseTraits = char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS;
+  const baseTraits = char.baseTraits ?? (char.gender === 'female' ? FEMALE_BASE_TRAITS : MALE_BASE_TRAITS);
 
   const anglePrompts: Record<string, string> = {
     'front': 'front-facing portrait, looking directly at camera, centered, studio lighting, neutral background',
@@ -521,5 +464,5 @@ export function buildCharacterReferencePrompt(
 
   const noLayout = 'single portrait only, no text, no labels, no annotations, no inset panels, no detail callouts, no multi-view layout';
   const aestheticStr = buildAestheticString(aesthetic);
-  return `${char.fullDescription}. ${baseTraits}. ${anglePrompts[angle]}. ${noLayout}. ${aestheticStr}. ${char.wardrobe}.`;
+  return `STYLE: ${aestheticStr}. ${anglePrompts[angle]}. ${char.fullDescription}. ${baseTraits}. ${noLayout}. ${char.wardrobe}. STYLE REMINDER: ${aesthetic.style}, ${aesthetic.filmStock}.`;
 }

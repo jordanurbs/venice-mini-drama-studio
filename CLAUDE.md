@@ -11,7 +11,7 @@ The user interacts entirely through natural language conversation -- never ask t
 3. **Auditions voices** per character via Venice TTS, locked for series consistency
 4. **Workshops episode scripts** collaboratively (user provides concept, we draft together)
 5. **Generates storyboard panels** at 9:16 (vertical/mobile-first) using Venice AI
-6. **Generates video clips** with native audio (dialogue, SFX, ambient) using Kling V3 Pro (action) and Veo 3.1 (atmosphere)
+6. **Generates video clips** with native audio (dialogue, SFX, ambient) using R2V (Kling O3 Standard Reference-to-Video) for all character shots and Veo 3.1 for empty establishing/mood shots
 7. **Assembles final episodes** with burned-in subtitles, optional Venice TTS audio overrides, and background music
 
 ## How To Operate
@@ -570,6 +570,28 @@ Always run this conversion after `explore-aesthetic` and `add-character` image g
 - For character design, always include the attractiveness traits in prompts.
 - If a Venice API call fails, report the error and suggest next steps.
 - Never delete generated videos when regenerating. Archive previous versions.
+- **Never group shots with different characters into multi-shot units.** Multi-shot grouping requires pairwise character overlap between consecutive shots — shots cutting between different speakers must be separate singles so each gets R2V identity anchoring.
+- **Always validate durations against model specs.** The atmosphere model (`veo3.1-fast-image-to-video`) only accepts 4s/6s/8s — never use 3s or 5s.
+- **Front-load style in all prompts.** Aesthetic/style descriptions must appear at the START of prompts, not buried at the end. This prevents style drift across angles and shots.
+- **Use cfg_scale 10 for character references and storyboard panels.** Lower values (e.g., 7) allow the model too much freedom, causing style inconsistency between angles.
+
+## Learned Anti-Patterns (Production Issues)
+
+### 1. Multi-Shot Grouping Bug: Wrong Character Overlap Check
+**Symptom:** Shots cutting between different characters (e.g., two-shot → single) were grouped into Kling multi-shot units, which use `kling-o3-pro-image-to-video` — a model with NO `elements` or `reference_image_urls` support.
+**Fix:** `hasOverlappingCharacters()` now requires pairwise overlap between consecutive shots. Shots with disjoint characters render as singles with R2V.
+
+### 2. Character Reference Style Inconsistency Across Angles
+**Symptom:** Front-facing reference was cartoon/stylized but profile and full-body drifted to photorealistic.
+**Fix:** Front-loaded `STYLE:` prefix and `STYLE REMINDER:` suffix in `buildCharacterReferencePrompt`. Bumped `cfg_scale` to 10. Added `photorealistic, photograph, photo` to negative prompt.
+
+### 3. Atmosphere Model Duration Validation
+**Symptom:** `veo3.1-fast-image-to-video` returned 400 error for `duration: "3s"`.
+**Fix:** Use 4s minimum for atmosphere model shots. Only 4s/6s/8s are valid.
+
+### 4. Talk Show / Interview Format: All Character Shots Must Be R2V Singles
+**Symptom:** Character appearance was inconsistent between cuts in talk show format.
+**Fix:** For formats with frequent speaker cuts, set `mustStaySingle: true` on all shots. Every character shot uses `kling-o3-standard-reference-to-video` with `elements` for identity anchoring.
 
 ---
 

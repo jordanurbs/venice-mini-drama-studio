@@ -285,11 +285,11 @@ program
         try {
           const response = await generateImage(client, {
             prompt,
-            negative_prompt: 'deformed, blurry, bad anatomy, low quality, multiple people, text, watermark, character reference sheet, annotations, labels, inset panels, detail callouts, multi-view layout, comic panels, panel borders',
+            negative_prompt: 'deformed, blurry, bad anatomy, low quality, multiple people, text, watermark, character reference sheet, annotations, labels, inset panels, detail callouts, multi-view layout, comic panels, panel borders, photorealistic, photograph, photo',
             resolution: '1K',
             aspect_ratio: '1:1',
             steps: 30,
-            cfg_scale: 7,
+            cfg_scale: 10,
             seed,
             safe_mode: false,
             hide_watermark: true,

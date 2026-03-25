@@ -39,6 +39,7 @@ export interface MiniDramaCharacter {
   voiceDescription: string;
   voiceId?: string;
   voiceName?: string;
+  baseTraits?: string;
   locked: boolean;
   seed: number;
 }
@@ -201,15 +202,15 @@ export interface GenerationPlan {
   units: GenerationUnit[];
 }
 
-export const DEFAULT_ACTION_MODEL = 'kling-v3-pro-image-to-video';
+export const DEFAULT_ACTION_MODEL = 'kling-o3-standard-reference-to-video';
 export const DEFAULT_ATMOSPHERE_MODEL = 'veo3.1-fast-image-to-video';
 export const DEFAULT_CHARACTER_CONSISTENCY_MODEL = 'kling-o3-standard-reference-to-video';
 export const KLING_MULTISHOT_MODEL = 'kling-o3-pro-image-to-video';
 
 export const VIDEO_NO_MUSIC_SUFFIX = 'No background music. Only generate dialogue, ambient sound, and sound effects.';
 
-export const FEMALE_BASE_TRAITS = 'beautiful, elegant, hourglass figure, classy cleavage, skin showing, detailed features';
-export const MALE_BASE_TRAITS = 'extremely handsome, strong jawline, styled appearance, detailed features';
+export const FEMALE_BASE_TRAITS = 'beautiful, elegant, detailed features';
+export const MALE_BASE_TRAITS = 'handsome, strong features, detailed features';
 
 export interface VideoElement {
   frontalImageUrl?: string;

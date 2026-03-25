@@ -68,6 +68,17 @@ function hasSameCharacterCore(shots: ShotScript[]): boolean {
   return unique.size > 0 && unique.size <= 2;
 }
 
+function hasOverlappingCharacters(shots: ShotScript[]): boolean {
+  if (shots.length < 2) return true;
+  for (let i = 1; i < shots.length; i++) {
+    const prev = new Set(shots[i - 1].characters.map(n => n.toUpperCase()));
+    const curr = shots[i].characters.map(n => n.toUpperCase());
+    if (prev.size === 0 || curr.length === 0) return false;
+    if (!curr.some(n => prev.has(n))) return false;
+  }
+  return true;
+}
+
 function getActionDensityScore(shot: ShotScript): number {
   const lower = shot.description.toLowerCase();
   let score = 1;
@@ -160,26 +171,25 @@ function canUseMultiShotWindow(window: ShotScript[]): { ok: boolean; reasons: st
     return { ok: false, reasons: ['window exceeds 15 second Kling limit'] };
   }
 
-  if (isDialogueSequence(window)) {
-    return { ok: true, reasons: ['dialogue exchange fits Kling multi-shot'] };
+  if (!hasOverlappingCharacters(window)) {
+    return { ok: false, reasons: ['no overlapping characters across shots'] };
   }
 
-  if (isShortActionChain(window)) {
-    return { ok: true, reasons: ['short action chain fits Kling multi-shot'] };
-  }
-
+  const reasons: string[] = [];
+  if (isDialogueSequence(window)) reasons.push('dialogue exchange');
+  if (isShortActionChain(window)) reasons.push('action chain');
   const hasMatchLikeTransition = window.some(shot =>
     ['MATCH CUT', 'DISSOLVE', 'CROSSFADE'].includes(shot.transition.toUpperCase()),
   );
-  if (hasMatchLikeTransition && hasSameCharacterCore(window)) {
-    return { ok: true, reasons: ['match-like transition chain fits Kling multi-shot'] };
-  }
+  if (hasMatchLikeTransition) reasons.push('match-like transitions');
+  if (reasons.length === 0) reasons.push('character continuity');
+  reasons.push(`${window.length}-shot Kling multi-shot`);
 
-  return { ok: false, reasons: ['window does not match supported multi-shot patterns'] };
+  return { ok: true, reasons };
 }
 
 function selectMultiShotWindow(shots: ShotScript[], startIdx: number): { length: number; reasons: string[] } | null {
-  const maxWindow = Math.min(3, shots.length - startIdx);
+  const maxWindow = Math.min(6, shots.length - startIdx);
 
   for (let length = maxWindow; length >= 2; length--) {
     const window = shots.slice(startIdx, startIdx + length);
